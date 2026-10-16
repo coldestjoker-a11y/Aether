@@ -18,7 +18,7 @@ import {
   Sparkles,
   Search,
 } from "lucide-react";
-import { formatUnits, parseAbi } from "viem";
+import { formatUnits } from "viem";
 import { useWalletStore } from "@/store/useWalletStore";
 import {
   CHAIN_METADATA,
@@ -34,10 +34,6 @@ import { useToast } from "@/components/ui/ToastProvider";
 import { fetchUniversalTokenList } from "@/lib/tokens/registry";
 import { TokenLogo } from "@/components/ui/TokenLogo";
 
-const ERC20_BALANCE_ABI = parseAbi([
-  "function balanceOf(address owner) view returns (uint256)",
-]);
-
 interface Props {
   onNavigateTab: (tab: "swap" | "send" | "receive" | "deposit") => void;
 }
@@ -51,6 +47,9 @@ export default function DashboardView({ onNavigateTab }: Props) {
     addCustomToken,
     customRpcs,
     currency,
+    syncChainBalances,
+    getEffectiveTokenBalance,
+    balanceSyncVersion,
   } = useWalletStore();
   const { pushToast } = useToast();
 
@@ -63,7 +62,6 @@ export default function DashboardView({ onNavigateTab }: Props) {
   const [prices, setPrices] = useState<
     Record<string, { price: number; change24h: number }>
   >({});
-  const [rawBalances, setRawBalances] = useState<Record<string, bigint>>({});
   const [isLoadingBalances, setIsLoadingBalances] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
@@ -94,38 +92,12 @@ export default function DashboardView({ onNavigateTab }: Props) {
       setIsRefreshing(true);
     }
     try {
-      const client = getResilientPublicClient(
-        activeChainId,
-        customRpcs[activeChainId]
-      );
-
-      const results: Record<string, bigint> = {};
-      await Promise.all(
-        chainTokens.map(async (token) => {
-          try {
-            if (token.address === "NATIVE") {
-              const bal = await client.getBalance({ address: activeAddress });
-              results[token.symbol] = bal;
-            } else {
-              const bal = await client.readContract({
-                address: token.address,
-                abi: ERC20_BALANCE_ABI,
-                functionName: "balanceOf",
-                args: [activeAddress],
-              });
-              results[token.address] = bal;
-            }
-          } catch {
-            results[token.address === "NATIVE" ? token.symbol : token.address] = 0n;
-          }
-        })
-      );
-      setRawBalances(results);
+      await syncChainBalances(activeChainId);
       if (manual) {
         pushToast({
           type: "info",
           title: "Portfolio Synced",
-          description: `Updated on-chain balances on ${CHAIN_METADATA[activeChainId].name}`,
+          description: `Updated balances on ${CHAIN_METADATA[activeChainId].name}`,
         });
       }
     } finally {
@@ -158,11 +130,15 @@ export default function DashboardView({ onNavigateTab }: Props) {
   const tokenBalances: TokenBalance[] = useMemo(() => {
     return chainTokens
       .map((token) => {
-        const key = token.address === "NATIVE" ? token.symbol : token.address;
-        const raw = rawBalances[key] ?? 0n;
+        const raw = getEffectiveTokenBalance(activeChainId, token);
         const formatted = formatUnits(raw, token.decimals);
         const ticker = prices[token.binanceSymbol || "ETHUSDT"] || {
-          price: 1,
+          price:
+            token.symbol === "USDC" ||
+            token.symbol === "USDT" ||
+            token.symbol === "DAI"
+              ? 1
+              : 2640.5,
           change24h: 0,
         };
         const usdPrice = ticker.price * currencyMultiplier;
@@ -182,7 +158,14 @@ export default function DashboardView({ onNavigateTab }: Props) {
           t.symbol.toLowerCase().includes(searchFilter.toLowerCase()) ||
           t.name.toLowerCase().includes(searchFilter.toLowerCase())
       );
-  }, [chainTokens, rawBalances, prices, currencyMultiplier, searchFilter]);
+  }, [
+    chainTokens,
+    activeChainId,
+    balanceSyncVersion,
+    prices,
+    currencyMultiplier,
+    searchFilter,
+  ]);
 
   const totalPortfolioValue = useMemo(
     () => tokenBalances.reduce((acc, item) => acc + item.usdValue, 0),
