@@ -3,12 +3,19 @@ const cspHeader = `
     default-src 'self';
     script-src 'self' 'unsafe-eval' 'unsafe-inline';
     style-src 'self' 'unsafe-inline';
-    img-src 'self' blob: data: https://raw.githubusercontent.com https://assets.coingecko.com;
+    img-src 'self' blob: data:
+      https://raw.githubusercontent.com
+      https://assets.coingecko.com
+      https://assets.coincap.io
+      https://tokens.1inch.io
+      https://static.debank.com;
     font-src 'self';
     connect-src 'self'
       https://*.alchemy.com wss://*.alchemy.com
       https://*.infura.io wss://*.infura.io
       https://*.publicnode.com
+      https://rpc.sepolia.org
+      https://1rpc.io
       https://api.0x.org https://sepolia.api.0x.org
       https://li.quest
       https://api.gopluslabs.io

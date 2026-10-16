@@ -1,30 +1,16 @@
 "use client";
 
 import React, { useState } from "react";
-import {
-  ShieldOff,
-  Eye,
-  Trash2,
-  Lock,
-  PlusCircle,
-  Server,
-} from "lucide-react";
-import { Address } from "viem";
+import { Eye, Trash2, Lock, PlusCircle, Server } from "lucide-react";
 import { useWalletStore } from "@/store/useWalletStore";
 import { decryptKeystoreSecret } from "@/lib/crypto/keystore";
-import {
-  encodeErc20Approve,
-  simulateAndEstimateTransaction,
-  signAndBroadcastTransaction,
-} from "@/lib/tx/engine";
 import { CHAIN_METADATA } from "@/lib/chains/config";
+import { resolveOnChainERC20Token } from "@/lib/tokens/registry";
 
 export default function SettingsView() {
   const {
     keystore,
-    activeAddress,
     activeChainId,
-    sessionPrivateKey,
     customRpcs,
     setCustomRpc,
     addCustomToken,
@@ -34,21 +20,12 @@ export default function SettingsView() {
     setTheme,
     lockWallet,
     resetWallet,
-    addTransaction,
   } = useWalletStore();
 
   const [rpcInput, setRpcInput] = useState<string>(
     customRpcs[activeChainId] || ""
   );
   const [tokenAddr, setTokenAddr] = useState<string>("");
-  const [tokenSymbol, setTokenSymbol] = useState<string>("");
-  const [revokeTokenAddr, setRevokeTokenAddr] = useState<string>(
-    "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
-  );
-  const [revokeSpender, setRevokeSpender] = useState<string>(
-    "0xDef1C0ded9bec7F1a1670819833240f027b25EfF"
-  );
-
   const [revealPassword, setRevealPassword] = useState<string>("");
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -65,40 +42,27 @@ export default function SettingsView() {
     }
   };
 
-  const handleRevokeAllowance = async () => {
-    if (!sessionPrivateKey || !activeAddress) return;
-    try {
-      const data = encodeErc20Approve(revokeSpender as Address, 0n);
-      const sim = await simulateAndEstimateTransaction({
-        chainId: activeChainId,
-        from: activeAddress,
-        to: revokeTokenAddr as Address,
-        data,
-      });
-
-      const tx = await signAndBroadcastTransaction({
-        chainId: activeChainId,
-        privateKeyHex: sessionPrivateKey,
-        to: revokeTokenAddr as Address,
-        value: 0n,
-        data,
-        gasLimit: sim.fees.estimatedGasLimit,
-        maxFeePerGas: sim.fees.normal.maxFeePerGas,
-        maxPriorityFeePerGas: sim.fees.normal.maxPriorityFeePerGas,
-        type: "approve",
-        summary: `Revoke Allowance on ${revokeTokenAddr.slice(0, 8)}...`,
-      });
-      addTransaction(tx);
-      setStatusMsg(`Revoke transaction broadcasted: ${tx.hash.slice(0, 12)}...`);
-    } catch (err: unknown) {
-      setStatusMsg(err instanceof Error ? err.message : "Revoke failed");
+  const handleAutoImportToken = async () => {
+    if (!tokenAddr) return;
+    setStatusMsg("Reading token metadata from blockchain...");
+    const resolved = await resolveOnChainERC20Token(
+      activeChainId,
+      tokenAddr,
+      customRpcs[activeChainId]
+    );
+    if (!resolved) {
+      setStatusMsg("Could not resolve ERC-20 contract on this network.");
+      return;
     }
+    addCustomToken(resolved);
+    setTokenAddr("");
+    setStatusMsg(`Added ${resolved.name} (${resolved.symbol}) with live logo!`);
   };
 
   return (
-    <div className="space-y-5 pb-24">
+    <div className="space-y-5 pb-28">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold">Security & Settings</h2>
+        <h2 className="text-xl font-bold">Wallet Settings</h2>
         <button
           onClick={lockWallet}
           className="px-3 py-1.5 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold flex items-center gap-1.5"
@@ -116,10 +80,14 @@ export default function SettingsView() {
       {/* Currency & Theme */}
       <div className="p-4 rounded-2xl bg-vault-card border border-vault-border grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs text-slate-400 block mb-1">Display Currency</label>
+          <label className="text-xs text-slate-400 block mb-1">
+            Display Currency
+          </label>
           <select
             value={currency}
-            onChange={(e) => setCurrency(e.target.value as "USD" | "EUR" | "GBP")}
+            onChange={(e) =>
+              setCurrency(e.target.value as "USD" | "EUR" | "GBP")
+            }
             className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold"
           >
             <option value="USD">USD ($)</option>
@@ -166,75 +134,27 @@ export default function SettingsView() {
         </div>
       </div>
 
-      {/* Add Custom ERC-20 Token */}
+      {/* 1-Click Auto-Resolving Custom Token Importer */}
       <div className="p-4 rounded-2xl bg-vault-card border border-vault-border space-y-2.5">
         <div className="text-xs font-bold flex items-center gap-1.5">
           <PlusCircle className="w-4 h-4 text-emerald-400" />
-          <span>Import Custom Token</span>
+          <span>Auto-Import Custom ERC-20 Token</span>
         </div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="flex gap-2">
           <input
             type="text"
-            placeholder="0x Contract..."
+            placeholder="Paste 0x Contract Address..."
             value={tokenAddr}
             onChange={(e) => setTokenAddr(e.target.value)}
-            className="col-span-2 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono"
+            className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono"
           />
-          <input
-            type="text"
-            placeholder="Symbol"
-            value={tokenSymbol}
-            onChange={(e) => setTokenSymbol(e.target.value)}
-            className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs"
-          />
+          <button
+            onClick={handleAutoImportToken}
+            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold"
+          >
+            Auto-Detect
+          </button>
         </div>
-        <button
-          onClick={() => {
-            if (!tokenAddr || !tokenSymbol) return;
-            addCustomToken({
-              chainId: activeChainId,
-              address: tokenAddr as Address,
-              symbol: tokenSymbol.toUpperCase(),
-              name: tokenSymbol.toUpperCase(),
-              decimals: 18,
-              isCustom: true,
-            });
-            setTokenAddr("");
-            setTokenSymbol("");
-            setStatusMsg("Custom token added to active chain.");
-          }}
-          className="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold"
-        >
-          Add Token
-        </button>
-      </div>
-
-      {/* ERC-20 Approval Revoker */}
-      <div className="p-4 rounded-2xl bg-vault-card border border-vault-border space-y-2.5">
-        <div className="text-xs font-bold flex items-center gap-1.5 text-amber-300">
-          <ShieldOff className="w-4 h-4" />
-          <span>Token Approvals Manager (Revoke Spender)</span>
-        </div>
-        <input
-          type="text"
-          value={revokeTokenAddr}
-          onChange={(e) => setRevokeTokenAddr(e.target.value)}
-          placeholder="Token Contract (0x...)"
-          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono"
-        />
-        <input
-          type="text"
-          value={revokeSpender}
-          onChange={(e) => setRevokeSpender(e.target.value)}
-          placeholder="Spender Router (0x...)"
-          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono"
-        />
-        <button
-          onClick={handleRevokeAllowance}
-          className="w-full py-2 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold"
-        >
-          Revoke Allowance (Set to 0)
-        </button>
       </div>
 
       {/* Reveal Recovery Phrase with Password Re-Entry */}

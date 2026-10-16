@@ -36,6 +36,7 @@ import {
 } from "@/lib/tokens/registry";
 import { TokenAsset } from "@/types/wallet";
 import { triggerHaptic } from "@/lib/ui/haptics";
+import { TokenLogo } from "@/components/ui/TokenLogo";
 import { useToast } from "@/components/ui/ToastProvider";
 
 const ERC20_BALANCE_ABI = parseAbi([
@@ -357,8 +358,11 @@ export default function SendView() {
       >
         {/* Asset Selector + Direct On-Chain Contract Importer */}
         <div className="space-y-2">
-          <div className="flex justify-between text-xs text-slate-400">
-            <span>Select Asset ({allChainTokens.length} available)</span>
+          <div className="flex justify-between items-center text-xs text-slate-400">
+            <div className="flex items-center gap-2">
+              <TokenLogo token={selectedToken} size={22} showChainBadge={false} />
+              <span>Select Asset ({allChainTokens.length} available)</span>
+            </div>
             <span>
               Balance:{" "}
               {parseFloat(

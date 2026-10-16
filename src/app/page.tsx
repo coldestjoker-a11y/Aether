@@ -9,6 +9,7 @@ import {
   Settings,
   ArrowLeft,
   ShieldCheck,
+  Activity,
 } from "lucide-react";
 import { useWalletStore } from "@/store/useWalletStore";
 import OnboardingView from "@/components/OnboardingView";
@@ -17,6 +18,7 @@ import SwapView from "@/components/SwapView";
 import SendView from "@/components/SendView";
 import ReceiveDepositView from "@/components/ReceiveDepositView";
 import ActivityView from "@/components/ActivityView";
+import AdminDashboardView from "@/components/AdminDashboardView";
 import SettingsView from "@/components/SettingsView";
 import { triggerHaptic } from "@/lib/ui/haptics";
 
@@ -27,6 +29,7 @@ type ActiveTab =
   | "receive"
   | "deposit"
   | "activity"
+  | "admin"
   | "settings";
 
 export default function WalletAppPage() {
@@ -97,6 +100,7 @@ export default function WalletAppPage() {
               {tab === "receive" && <ReceiveDepositView initialMode="receive" />}
               {tab === "deposit" && <ReceiveDepositView initialMode="deposit" />}
               {tab === "activity" && <ActivityView />}
+              {tab === "admin" && <AdminDashboardView />}
               {tab === "settings" && <SettingsView />}
             </motion.div>
           </AnimatePresence>
@@ -111,6 +115,7 @@ export default function WalletAppPage() {
             { id: "home", label: "Home", icon: Home },
             { id: "swap", label: "Swap", icon: Repeat },
             { id: "activity", label: "Activity", icon: Clock },
+            { id: "admin", label: "Admin", icon: Activity },
             { id: "settings", label: "Settings", icon: Settings },
           ].map((item) => {
             const Icon = item.icon;

@@ -29,6 +29,7 @@ import BottomSheet from "@/components/ui/BottomSheet";
 import { triggerHaptic } from "@/lib/ui/haptics";
 import { useToast } from "@/components/ui/ToastProvider";
 import { fetchUniversalTokenList } from "@/lib/tokens/registry";
+import { TokenLogo, TokenPairLogo } from "@/components/ui/TokenLogo";
 
 export default function SwapView() {
   const {
@@ -294,8 +295,9 @@ export default function SwapView() {
                 setTokenSearch("");
                 setTokenPickerSide("sell");
               }}
-              className="px-3.5 py-2 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-white/10 text-xs font-bold flex items-center gap-1.5 shrink-0"
+              className="px-3 py-1.5 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-white/10 text-xs font-bold flex items-center gap-2 shrink-0"
             >
+              <TokenLogo token={sellToken} size={22} showChainBadge={false} />
               <span>{sellToken?.symbol}</span>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
             </motion.button>
@@ -343,8 +345,9 @@ export default function SwapView() {
                 setTokenSearch("");
                 setTokenPickerSide("buy");
               }}
-              className="px-3.5 py-2 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-white/10 text-xs font-bold flex items-center gap-1.5 shrink-0"
+              className="px-3 py-1.5 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-white/10 text-xs font-bold flex items-center gap-2 shrink-0"
             >
+              <TokenLogo token={buyToken} size={22} showChainBadge={false} />
               <span>{buyToken?.symbol}</span>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
             </motion.button>
@@ -520,9 +523,7 @@ export default function SwapView() {
                   className="w-full p-3 rounded-2xl bg-slate-950/70 hover:bg-indigo-600/20 border border-white/5 flex items-center justify-between transition"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center font-bold text-xs text-indigo-300">
-                      {t.symbol.slice(0, 4)}
-                    </div>
+                    <TokenLogo token={t} size={36} showChainBadge={false} />
                     <div className="text-left">
                       <div className="text-xs font-bold text-white">
                         {t.symbol}
@@ -550,6 +551,9 @@ export default function SwapView() {
         subtitle="Pre-simulated via eth_call with zero revert errors"
       >
         <div className="space-y-4">
+          <div className="flex justify-center py-1">
+            <TokenPairLogo sellToken={sellToken} buyToken={buyToken} size={36} />
+          </div>
           <div className="p-4 rounded-2xl bg-slate-950 border border-white/10 space-y-3 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-slate-400">You will send</span>

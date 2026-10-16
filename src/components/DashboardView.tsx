@@ -32,6 +32,7 @@ import BottomSheet from "@/components/ui/BottomSheet";
 import { triggerHaptic, formatFriendlyAddress } from "@/lib/ui/haptics";
 import { useToast } from "@/components/ui/ToastProvider";
 import { fetchUniversalTokenList } from "@/lib/tokens/registry";
+import { TokenLogo } from "@/components/ui/TokenLogo";
 
 const ERC20_BALANCE_ABI = parseAbi([
   "function balanceOf(address owner) view returns (uint256)",
@@ -462,9 +463,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
                     className="px-3.5 py-2.5 flex items-center justify-between rounded-2xl hover:bg-slate-800/50 active:scale-[0.99] transition cursor-pointer"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500/25 to-violet-500/20 border border-indigo-500/30 flex items-center justify-center font-extrabold text-xs text-indigo-300 shadow-inner">
-                        {token.symbol.slice(0, 4)}
-                      </div>
+                      <TokenLogo token={token} size={44} />
                       <div>
                         <div className="text-sm font-bold text-white flex items-center gap-1.5">
                           <span>{token.symbol}</span>
@@ -581,11 +580,14 @@ export default function DashboardView({ onNavigateTab }: Props) {
         {selectedAssetDetail && (
           <div className="space-y-4">
             <div className="p-4 rounded-2xl bg-slate-950 border border-white/10 flex items-center justify-between">
-              <div>
-                <div className="text-xs text-slate-400">Your Balance</div>
-                <div className="text-xl font-bold font-mono mt-0.5">
-                  {selectedAssetDetail.formattedBalance}{" "}
-                  {selectedAssetDetail.symbol}
+              <div className="flex items-center gap-3">
+                <TokenLogo token={selectedAssetDetail} size={44} />
+                <div>
+                  <div className="text-xs text-slate-400">Your Balance</div>
+                  <div className="text-xl font-bold font-mono mt-0.5">
+                    {selectedAssetDetail.formattedBalance}{" "}
+                    {selectedAssetDetail.symbol}
+                  </div>
                 </div>
               </div>
               <div className="text-right">
