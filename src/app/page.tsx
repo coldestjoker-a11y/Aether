@@ -9,7 +9,6 @@ import {
   Settings,
   ArrowLeft,
   ShieldCheck,
-  Activity,
 } from "lucide-react";
 import { useWalletStore } from "@/store/useWalletStore";
 import OnboardingView from "@/components/OnboardingView";
@@ -18,7 +17,6 @@ import SwapView from "@/components/SwapView";
 import SendView from "@/components/SendView";
 import ReceiveDepositView from "@/components/ReceiveDepositView";
 import ActivityView from "@/components/ActivityView";
-import AdminDashboardView from "@/components/AdminDashboardView";
 import SettingsView from "@/components/SettingsView";
 import { triggerHaptic } from "@/lib/ui/haptics";
 
@@ -29,7 +27,6 @@ type ActiveTab =
   | "receive"
   | "deposit"
   | "activity"
-  | "admin"
   | "settings";
 
 export default function WalletAppPage() {
@@ -58,7 +55,6 @@ export default function WalletAppPage() {
       </div>
 
       <div className="w-full max-w-md min-h-screen flex flex-col justify-between p-4 relative z-10">
-        {/* Contextual Sub-View Back Header */}
         {isSubView && (
           <div className="mb-3 flex items-center justify-between">
             <button
@@ -77,7 +73,6 @@ export default function WalletAppPage() {
           </div>
         )}
 
-        {/* Smooth Spring-Animated Screen Switcher */}
         <div className="flex-1">
           <AnimatePresence mode="wait">
             <motion.div
@@ -100,13 +95,12 @@ export default function WalletAppPage() {
               {tab === "receive" && <ReceiveDepositView initialMode="receive" />}
               {tab === "deposit" && <ReceiveDepositView initialMode="deposit" />}
               {tab === "activity" && <ActivityView />}
-              {tab === "admin" && <AdminDashboardView />}
               {tab === "settings" && <SettingsView />}
             </motion.div>
           </AnimatePresence>
         </div>
 
-        {/* Floating Glassmorphic Bottom Navigation Bar with Sliding Pill */}
+        {/* Consumer 4-Tab Bottom Navigation Bar */}
         <nav
           aria-label="Bottom Navigation"
           className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-md px-3 py-2 rounded-3xl bg-slate-900/90 border border-white/10 backdrop-blur-2xl flex items-center justify-around shadow-2xl z-40"
@@ -115,7 +109,6 @@ export default function WalletAppPage() {
             { id: "home", label: "Home", icon: Home },
             { id: "swap", label: "Swap", icon: Repeat },
             { id: "activity", label: "Activity", icon: Clock },
-            { id: "admin", label: "Admin", icon: Activity },
             { id: "settings", label: "Settings", icon: Settings },
           ].map((item) => {
             const Icon = item.icon;
@@ -133,7 +126,9 @@ export default function WalletAppPage() {
                   setTab(item.id as ActiveTab);
                 }}
                 className={`relative flex flex-col items-center gap-1 px-4 py-1.5 rounded-2xl transition ${
-                  active ? "text-white font-bold" : "text-slate-400 hover:text-slate-200"
+                  active
+                    ? "text-white font-bold"
+                    : "text-slate-400 hover:text-slate-200"
                 }`}
               >
                 {active && (

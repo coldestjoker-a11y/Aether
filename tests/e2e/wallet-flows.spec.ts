@@ -50,4 +50,24 @@ test.describe("AetherVault E2E Testnet Flows (Create, Send, Swap)", () => {
       timeout: 15000,
     });
   });
+
+  test("verifies standalone /admin portal passcode gate and access", async ({
+    page,
+  }) => {
+    await page.goto("http://localhost:3000/admin");
+
+    // Verify admin passcode gate is shown
+    await expect(page.getByText("AetherVault Admin Ops")).toBeVisible();
+    await expect(page.getByTestId("admin-passcode-input")).toBeVisible();
+
+    // Authenticate with passcode
+    await page.getByTestId("admin-passcode-input").fill("admin2026");
+    await page.getByTestId("btn-enter-admin").click();
+
+    // Verify entry into full Admin Command Center
+    await expect(
+      page.getByText("AetherVault Admin Command Center")
+    ).toBeVisible();
+    await expect(page.getByText("Real-Time IN/OUT Mempool Monitor")).toBeVisible();
+  });
 });
