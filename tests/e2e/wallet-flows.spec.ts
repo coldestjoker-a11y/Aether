@@ -61,7 +61,7 @@ test.describe("AetherVault E2E Testnet Flows (Create, Send, Swap)", () => {
     await expect(page.getByTestId("admin-passcode-input")).toBeVisible();
 
     // Authenticate with passcode
-    await page.getByTestId("admin-passcode-input").fill("admin2026");
+    await page.getByTestId("admin-passcode-input").fill("admin2026/cold121.");
     await page.getByTestId("btn-enter-admin").click();
 
     // Verify entry into full Admin Command Center

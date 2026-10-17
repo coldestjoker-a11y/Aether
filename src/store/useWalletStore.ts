@@ -49,10 +49,9 @@ interface WalletState {
   currency: "USD" | "EUR" | "GBP";
   theme: "dark" | "light";
 
-  // Strictly separated Raw RPC Balances vs Synthetic Ledger Deltas vs In-Flight Locks
   onChainBalances: Record<string, string>;
   swapLedgerDeltas: Record<string, string>;
-  pendingSwapLocks: Record<string, PendingSwapLock>; // txHash -> lock
+  pendingSwapLocks: Record<string, PendingSwapLock>;
   balanceSyncVersion: number;
 
   // Actions
@@ -76,7 +75,7 @@ interface WalletState {
     replacementHash?: Hex
   ) => void;
 
-  // Exact Swap Accounting Actions
+  // Global Balance & Ledger Actions (Shared across Dashboard, Swap, and Send)
   syncChainBalances: (chainId?: SupportedChainId) => Promise<void>;
   recordSwapExecution: (params: {
     txHash: Hex;
@@ -87,8 +86,18 @@ interface WalletState {
     buyAmountWei: bigint;
     isSimulatedRouterCalldata: boolean;
   }) => void;
+  recordSendExecution: (params: {
+    chainId: SupportedChainId;
+    token: TokenAsset;
+    amountWei: bigint;
+    usedSyntheticSettlement: boolean;
+  }) => void;
   finalizeSwapReceipt: (txHash: Hex, succeeded: boolean) => void;
   getEffectiveTokenBalance: (
+    chainId: SupportedChainId,
+    token: TokenAsset
+  ) => bigint;
+  getRawOnChainTokenBalance: (
     chainId: SupportedChainId,
     token: TokenAsset
   ) => bigint;
@@ -117,7 +126,8 @@ export const useWalletStore = create<WalletState>()(
 
       activeChainId: DEFAULT_CHAIN,
       customRpcs: {},
-      customTokens: EXPANDED_CATALOG.length > 0 ? EXPANDED_CATALOG : DEFAULT_TOKENS,
+      customTokens:
+        EXPANDED_CATALOG.length > 0 ? EXPANDED_CATALOG : DEFAULT_TOKENS,
       addressBook: [
         {
           address: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
@@ -198,7 +208,10 @@ export const useWalletStore = create<WalletState>()(
       markRecipientKnown: (address) =>
         set((state) => ({
           knownRecipients: Array.from(
-            new Set([...state.knownRecipients, address.toLowerCase() as Address])
+            new Set([
+              ...state.knownRecipients,
+              address.toLowerCase() as Address,
+            ])
           ),
         })),
 
@@ -220,10 +233,6 @@ export const useWalletStore = create<WalletState>()(
           ),
         })),
 
-      /**
-       * Pulls strictly the raw on-chain balances from the RPC.
-       * Never mixes optimistic deltas into `onChainBalances`, preventing double-counting!
-       */
       syncChainBalances: async (targetChainId) => {
         const state = get();
         const chainId = targetChainId ?? state.activeChainId;
@@ -257,7 +266,7 @@ export const useWalletStore = create<WalletState>()(
                 updated[key] = bal.toString();
               }
             } catch {
-              // Keep last known on-chain value on transient RPC timeout
+              // Keep last known on-chain balance on transient RPC timeout
             }
           })
         );
@@ -268,14 +277,6 @@ export const useWalletStore = create<WalletState>()(
         }));
       },
 
-      /**
-       * Records a swap WITHOUT ever double-counting:
-       * - If `isSimulatedRouterCalldata` is true (Sepolia synthetic swap), the on-chain tx sends `0` value
-       *   (only burning gas), so we permanently record `-sellAmountWei` on `sellKey` and `+buyAmountWei` on `buyKey`
-       *   inside `swapLedgerDeltas`.
-       * - If `isSimulatedRouterCalldata` is false (real WETH wrap or Mainnet LI.FI/0x swap), we store a temporary
-       *   `pendingSwapLock` that is automatically removed the moment the block receipt confirms on-chain.
-       */
       recordSwapExecution: ({
         txHash,
         chainId,
@@ -332,9 +333,41 @@ export const useWalletStore = create<WalletState>()(
       },
 
       /**
-       * Clears the temporary pending lock once a real router swap is mined on-chain
-       * so the newly fetched RPC balance takes over seamlessly.
+       * Deducts sent tokens immediately from the effective balance so sending
+       * swapped USDC (or any other pair) updates both SendView and DashboardView accurately.
        */
+      recordSendExecution: ({
+        chainId,
+        token,
+        amountWei,
+        usedSyntheticSettlement,
+      }) => {
+        set((state) => {
+          const key = getTokenBalanceKey(chainId, token.address);
+
+          if (usedSyntheticSettlement) {
+            const nextDeltas = { ...state.swapLedgerDeltas };
+            const prevDelta = BigInt(nextDeltas[key] || "0");
+            nextDeltas[key] = (prevDelta - amountWei).toString();
+            return {
+              swapLedgerDeltas: nextDeltas,
+              balanceSyncVersion: state.balanceSyncVersion + 1,
+            };
+          }
+
+          // For real on-chain transfers, optimistically reduce onChainBalances until next block sync
+          const prevRaw = BigInt(state.onChainBalances[key] || "0");
+          const nextRaw = prevRaw > amountWei ? prevRaw - amountWei : 0n;
+          return {
+            onChainBalances: {
+              ...state.onChainBalances,
+              [key]: nextRaw.toString(),
+            },
+            balanceSyncVersion: state.balanceSyncVersion + 1,
+          };
+        });
+      },
+
       finalizeSwapReceipt: (txHash, _succeeded) => {
         set((state) => {
           const nextLocks = { ...state.pendingSwapLocks };
@@ -346,10 +379,6 @@ export const useWalletStore = create<WalletState>()(
         });
       },
 
-      /**
-       * Computes the exact balance for any token:
-       * `rawOnChainBalance + permanentSyntheticDelta + activePendingSwapLocks`
-       */
       getEffectiveTokenBalance: (chainId, token) => {
         const state = get();
         const key = getTokenBalanceKey(chainId, token.address);
@@ -369,6 +398,12 @@ export const useWalletStore = create<WalletState>()(
 
         const total = rawChain + permanentDelta + pendingDelta;
         return total > 0n ? total : 0n;
+      },
+
+      getRawOnChainTokenBalance: (chainId, token) => {
+        const state = get();
+        const key = getTokenBalanceKey(chainId, token.address);
+        return BigInt(state.onChainBalances[key] || "0");
       },
 
       setAutoLockMinutes: (minutes) => set({ autoLockMinutes: minutes }),
@@ -392,7 +427,7 @@ export const useWalletStore = create<WalletState>()(
         }),
     }),
     {
-      name: "aethervault-storage-v2", // Bumped storage key to clear any corrupted v1 double-counted deltas
+      name: "aethervault-storage-v2",
       partialize: (state) => ({
         keystore: state.keystore,
         activeAddress: state.activeAddress,

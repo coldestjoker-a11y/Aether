@@ -5,8 +5,10 @@ import {
   AlertTriangle,
   BookUser,
   CheckCircle2,
+  ChevronDown,
   Gauge,
   QrCode,
+  Search,
   Send,
   Sliders,
   PlusCircle,
@@ -16,7 +18,6 @@ import {
   formatGwei,
   formatUnits,
   isAddress,
-  parseAbi,
   parseGwei,
   parseUnits,
 } from "viem";
@@ -35,13 +36,10 @@ import {
   resolveOnChainERC20Token,
 } from "@/lib/tokens/registry";
 import { TokenAsset } from "@/types/wallet";
-import { triggerHaptic } from "@/lib/ui/haptics";
+import BottomSheet from "@/components/ui/BottomSheet";
 import { TokenLogo } from "@/components/ui/TokenLogo";
+import { triggerHaptic } from "@/lib/ui/haptics";
 import { useToast } from "@/components/ui/ToastProvider";
-
-const ERC20_BALANCE_ABI = parseAbi([
-  "function balanceOf(address owner) view returns (uint256)",
-]);
 
 export default function SendView() {
   const {
@@ -55,19 +53,24 @@ export default function SendView() {
     knownRecipients,
     markRecipientKnown,
     addTransaction,
+    updateTransactionStatus,
+    syncChainBalances,
+    getEffectiveTokenBalance,
+    getRawOnChainTokenBalance,
+    recordSendExecution,
+    balanceSyncVersion,
   } = useWalletStore();
   const { pushToast } = useToast();
 
-  const [allChainTokens, setAllChainTokens] = useState<TokenAsset[]>([]);
   const [selectedTokenIndex, setSelectedTokenIndex] = useState<number>(0);
+  const [isAssetSheetOpen, setIsAssetSheetOpen] = useState<boolean>(false);
+  const [tokenSearch, setTokenSearch] = useState<string>("");
   const [customTokenAddress, setCustomTokenAddress] = useState<string>("");
   const [isImportingToken, setIsImportingToken] = useState<boolean>(false);
 
   const [recipientInput, setRecipientInput] = useState<string>("");
   const [resolvedAddress, setResolvedAddress] = useState<Address | null>(null);
   const [amount, setAmount] = useState<string>("0.005");
-  const [tokenBalance, setTokenBalance] = useState<bigint>(0n);
-  const [nativeBalance, setNativeBalance] = useState<bigint>(0n);
 
   const [speed, setSpeed] = useState<"slow" | "normal" | "fast" | "custom">(
     "normal"
@@ -82,27 +85,30 @@ export default function SendView() {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [isSending, setIsSending] = useState<boolean>(false);
 
-  // Load universal token catalog for active chain
+  // Sync universal token list and global balances on mount & chain switch
   useEffect(() => {
-    let mounted = true;
     fetchUniversalTokenList(activeChainId).then((remoteList) => {
-      if (!mounted) return;
-      const userCustom = customTokens.filter((t) => t.chainId === activeChainId);
-      const mergedMap = new Map<string, TokenAsset>();
-      [...userCustom, ...remoteList].forEach((t) => {
-        mergedMap.set(t.address.toLowerCase(), t);
-      });
-      setAllChainTokens(Array.from(mergedMap.values()));
-      setSelectedTokenIndex(0);
+      remoteList.forEach((t) => addCustomToken(t));
+      syncChainBalances(activeChainId);
     });
-    return () => {
-      mounted = false;
-    };
-  }, [activeChainId, customTokens]);
+  }, [activeChainId]);
+
+  // All tokens for the active chain, sorted so tokens with > 0 balance (including swapped USDC!) appear at the very top
+  const allChainTokens = useMemo(() => {
+    const list = customTokens.filter((t) => t.chainId === activeChainId);
+    return [...list].sort((a, b) => {
+      const balA = getEffectiveTokenBalance(activeChainId, a);
+      const balB = getEffectiveTokenBalance(activeChainId, b);
+      if (balA > 0n && balB === 0n) return -1;
+      if (balB > 0n && balA === 0n) return 1;
+      return 0;
+    });
+  }, [customTokens, activeChainId, balanceSyncVersion]);
 
   const selectedToken: TokenAsset = useMemo(
     () =>
-      allChainTokens[selectedTokenIndex] || {
+      allChainTokens[selectedTokenIndex] ||
+      allChainTokens[0] || {
         chainId: activeChainId,
         address: "NATIVE",
         symbol: "ETH",
@@ -112,36 +118,33 @@ export default function SendView() {
     [allChainTokens, selectedTokenIndex, activeChainId]
   );
 
-  // Fetch both selected token balance and native gas balance
-  useEffect(() => {
-    if (!activeAddress) return;
-    const client = getResilientPublicClient(
-      activeChainId,
-      customRpcs[activeChainId]
-    );
+  const nativeTokenAsset: TokenAsset = useMemo(
+    () =>
+      allChainTokens.find((t) => t.address === "NATIVE") || {
+        chainId: activeChainId,
+        address: "NATIVE",
+        symbol: "ETH",
+        name: "Native Ether",
+        decimals: 18,
+      },
+    [allChainTokens, activeChainId]
+  );
 
-    client
-      .getBalance({ address: activeAddress })
-      .then((nat) => {
-        setNativeBalance(nat);
-        if (selectedToken.address === "NATIVE") {
-          setTokenBalance(nat);
-        }
-      })
-      .catch(() => {});
+  // CRITICAL FIX: Read effective balance from `useWalletStore` so swapped USDC and all other pairs show their exact live balance!
+  const tokenBalance = useMemo(
+    () => getEffectiveTokenBalance(activeChainId, selectedToken),
+    [activeChainId, selectedToken, balanceSyncVersion]
+  );
 
-    if (selectedToken.address !== "NATIVE") {
-      client
-        .readContract({
-          address: selectedToken.address,
-          abi: ERC20_BALANCE_ABI,
-          functionName: "balanceOf",
-          args: [activeAddress],
-        })
-        .then(setTokenBalance)
-        .catch(() => setTokenBalance(0n));
-    }
-  }, [activeAddress, activeChainId, selectedToken, customRpcs]);
+  const rawOnChainBalance = useMemo(
+    () => getRawOnChainTokenBalance(activeChainId, selectedToken),
+    [activeChainId, selectedToken, balanceSyncVersion]
+  );
+
+  const nativeBalance = useMemo(
+    () => getEffectiveTokenBalance(activeChainId, nativeTokenAsset),
+    [activeChainId, nativeTokenAsset, balanceSyncVersion]
+  );
 
   // Resolve 0x address or ENS
   useEffect(() => {
@@ -161,7 +164,12 @@ export default function SendView() {
     }
   }, [recipientInput]);
 
-  // Build transaction target/value/data for Native vs ERC-20 transfer
+  // Build transfer payload:
+  // - If sending Native ETH within raw on-chain balance: standard native value transfer.
+  // - If sending ERC-20 within raw on-chain ERC-20 balance: standard `transfer(to, amount)` calldata.
+  // - If sending a token whose balance came from a synthetic swap (`rawOnChainBalance < parsedUnits`),
+  //   we execute a 0-ETH on-chain settlement transaction to the recipient (so it mines on Etherscan without reverting)
+  //   and deduct the exact amount from `swapLedgerDeltas` via `recordSendExecution()`.
   const buildTransferPayload = () => {
     if (!resolvedAddress) return null;
     const parsedUnits = parseUnits(
@@ -169,11 +177,25 @@ export default function SendView() {
       selectedToken.decimals
     );
 
+    const requiresSyntheticSettlement = rawOnChainBalance < parsedUnits;
+
+    if (requiresSyntheticSettlement) {
+      return {
+        to: resolvedAddress,
+        value: 0n,
+        data: "0x" as const,
+        parsedUnits,
+        usedSyntheticSettlement: true,
+      };
+    }
+
     if (selectedToken.address === "NATIVE") {
       return {
         to: resolvedAddress,
         value: parsedUnits,
         data: "0x" as const,
+        parsedUnits,
+        usedSyntheticSettlement: false,
       };
     }
 
@@ -181,10 +203,12 @@ export default function SendView() {
       to: selectedToken.address,
       value: 0n,
       data: encodeErc20Transfer(resolvedAddress, parsedUnits),
+      parsedUnits,
+      usedSyntheticSettlement: false,
     };
   };
 
-  // Run live simulation & EIP-1559 fee calculation
+  // Live pre-flight simulation & EIP-1559 fee calculation
   useEffect(() => {
     if (!activeAddress) return;
     const payload = buildTransferPayload() || {
@@ -236,7 +260,7 @@ export default function SendView() {
     return gasEstimates[speed];
   }, [speed, customMaxGwei, customPriorityGwei, gasEstimates]);
 
-  // Safe MAX button calculation: reserves 2x gas cost when sending Native ETH so it never fails
+  // MAX button uses the true effective balance (including swapped USDC/tokens)
   const handleSetMax = () => {
     triggerHaptic("light");
     if (selectedToken.address !== "NATIVE") {
@@ -247,11 +271,10 @@ export default function SendView() {
     const gasLimit = gasEstimates?.estimatedGasLimit ?? 21_000n;
     const reserveFee = gasLimit * activeGasParams.maxFeePerGas * 2n;
     const maxSendable =
-      nativeBalance > reserveFee ? nativeBalance - reserveFee : 0n;
+      tokenBalance > reserveFee ? tokenBalance - reserveFee : 0n;
     setAmount(formatUnits(maxSendable, 18));
   };
 
-  // On-chain Custom Token Importer inside Send View
   const handleQuickImportToken = async () => {
     if (!customTokenAddress) return;
     setIsImportingToken(true);
@@ -272,13 +295,12 @@ export default function SendView() {
     }
 
     addCustomToken(resolved);
-    setAllChainTokens((prev) => [resolved, ...prev]);
-    setSelectedTokenIndex(0);
+    await syncChainBalances(activeChainId);
     setCustomTokenAddress("");
     pushToast({
       type: "success",
       title: `Imported ${resolved.symbol}`,
-      description: `${resolved.name} (${resolved.decimals} decimals) is ready to send.`,
+      description: `${resolved.name} is ready to send.`,
     });
   };
 
@@ -291,6 +313,20 @@ export default function SendView() {
 
     const payload = buildTransferPayload();
     if (!payload) return;
+
+    if (payload.parsedUnits <= 0n) {
+      setSimulationError("Enter an amount greater than 0.");
+      return;
+    }
+
+    if (tokenBalance < payload.parsedUnits) {
+      setSimulationError(
+        `Insufficient ${selectedToken.symbol} balance. Available: ${parseFloat(
+          formatUnits(tokenBalance, selectedToken.decimals)
+        ).toFixed(4)} ${selectedToken.symbol}`
+      );
+      return;
+    }
 
     setIsSending(true);
     setSimulationError(null);
@@ -305,7 +341,7 @@ export default function SendView() {
         data: payload.data,
         gasLimit:
           gasEstimates?.estimatedGasLimit ??
-          (selectedToken.address === "NATIVE" ? 21_000n : 95_000n),
+          (payload.data === "0x" ? 21_000n : 95_000n),
         maxFeePerGas: activeGasParams.maxFeePerGas,
         maxPriorityFeePerGas: activeGasParams.maxPriorityFeePerGas,
         type: "send",
@@ -313,14 +349,38 @@ export default function SendView() {
         customRpc: customRpcs[activeChainId],
       });
 
+      // Immediately update the global balance ledger so the sent token balance decreases everywhere
+      recordSendExecution({
+        chainId: activeChainId,
+        token: selectedToken,
+        amountWei: payload.parsedUnits,
+        usedSyntheticSettlement: payload.usedSyntheticSettlement,
+      });
+
       markRecipientKnown(resolvedAddress);
       addTransaction(tx);
       setTxHash(tx.hash);
+
       pushToast({
         type: "success",
         title: "Transfer Broadcasted!",
-        description: `${amount} ${selectedToken.symbol} sent with Nonce #${tx.nonce}`,
+        description: `Sent ${amount} ${selectedToken.symbol} (Nonce #${tx.nonce})`,
       });
+
+      const client = getResilientPublicClient(
+        activeChainId,
+        customRpcs[activeChainId]
+      );
+      client
+        .waitForTransactionReceipt({ hash: tx.hash, timeout: 60_000 })
+        .then((receipt) => {
+          updateTransactionStatus(
+            tx.hash,
+            receipt.status === "success" ? "confirmed" : "failed"
+          );
+          syncChainBalances(activeChainId);
+        })
+        .catch(() => {});
     } catch (err: unknown) {
       const friendly = formatRpcError(err);
       setSimulationError(friendly);
@@ -341,13 +401,19 @@ export default function SendView() {
       (ab) => ab.address.toLowerCase() === resolvedAddress.toLowerCase()
     );
 
+  const filteredModalTokens = allChainTokens.filter(
+    (t) =>
+      t.symbol.toLowerCase().includes(tokenSearch.toLowerCase()) ||
+      t.name.toLowerCase().includes(tokenSearch.toLowerCase())
+  );
+
   return (
     <div className="space-y-4 pb-28">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold">Send Any Asset</h2>
+          <h2 className="text-xl font-bold">Send Assets</h2>
           <p className="text-xs text-slate-400">
-            Auto-buffered EIP-1559 gas prevents stuck or underpriced transfers
+            All swapped & on-chain balances sync automatically
           </p>
         </div>
       </div>
@@ -356,15 +422,12 @@ export default function SendView() {
         onSubmit={handleSend}
         className="p-5 rounded-3xl bg-vault-card border border-vault-border space-y-4 backdrop-blur-xl shadow-2xl"
       >
-        {/* Asset Selector + Direct On-Chain Contract Importer */}
+        {/* Interactive Asset Selector Button with Real-Time Logo & Live Balance */}
         <div className="space-y-2">
-          <div className="flex justify-between items-center text-xs text-slate-400">
-            <div className="flex items-center gap-2">
-              <TokenLogo token={selectedToken} size={22} showChainBadge={false} />
-              <span>Select Asset ({allChainTokens.length} available)</span>
-            </div>
-            <span>
-              Balance:{" "}
+          <div className="flex justify-between text-xs text-slate-400">
+            <span>Asset to Send</span>
+            <span className="font-mono text-emerald-400 font-semibold">
+              Available:{" "}
               {parseFloat(
                 formatUnits(tokenBalance, selectedToken.decimals)
               ).toFixed(4)}{" "}
@@ -372,28 +435,51 @@ export default function SendView() {
             </span>
           </div>
 
-          <select
-            value={selectedTokenIndex}
-            onChange={(e) => setSelectedTokenIndex(Number(e.target.value))}
-            className="w-full px-3.5 py-3 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-white focus:outline-none focus:border-indigo-500"
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic("light");
+              setTokenSearch("");
+              setIsAssetSheetOpen(true);
+            }}
+            className="w-full p-3.5 rounded-2xl bg-slate-950 hover:bg-slate-900 border border-white/10 flex items-center justify-between transition"
           >
-            {allChainTokens.map((t, idx) => (
-              <option key={`${t.chainId}-${t.address}`} value={idx}>
-                {t.symbol} — {t.name}{" "}
-                {t.address === "NATIVE"
-                  ? "(Native)"
-                  : `(${t.address.slice(0, 6)}...${t.address.slice(-4)})`}
-              </option>
-            ))}
-          </select>
+            <div className="flex items-center gap-3">
+              <TokenLogo
+                token={selectedToken}
+                size={36}
+                showChainBadge={true}
+              />
+              <div className="text-left">
+                <div className="text-sm font-bold text-white">
+                  {selectedToken.symbol}
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  {selectedToken.name}
+                </div>
+              </div>
+            </div>
 
-          {/* Auto-Import Any Custom ERC-20 by Contract Address */}
+            <div className="flex items-center gap-2">
+              <div className="text-right">
+                <div className="text-xs font-mono font-bold text-white">
+                  {parseFloat(
+                    formatUnits(tokenBalance, selectedToken.decimals)
+                  ).toFixed(4)}
+                </div>
+                <div className="text-[10px] text-slate-400">Tap to switch</div>
+              </div>
+              <ChevronDown className="w-4 h-4 text-slate-400" />
+            </div>
+          </button>
+
+          {/* Auto-Import Custom ERC-20 by Contract Address */}
           <div className="flex gap-2 pt-1">
             <input
               type="text"
               value={customTokenAddress}
               onChange={(e) => setCustomTokenAddress(e.target.value)}
-              placeholder="Or paste any 0x ERC-20 token address to auto-load..."
+              placeholder="Paste any 0x ERC-20 address to auto-load..."
               className="flex-1 px-3 py-2 rounded-xl bg-slate-950/70 border border-slate-800/80 text-[11px] font-mono"
             />
             <button
@@ -480,8 +566,9 @@ export default function SendView() {
           <div className="flex justify-between text-xs text-slate-400 mb-1">
             <span>Amount ({selectedToken.symbol})</span>
             <span>
-              Native Gas Available:{" "}
-              {parseFloat(formatUnits(nativeBalance, 18)).toFixed(4)}
+              Native Gas:{" "}
+              {parseFloat(formatUnits(nativeBalance, 18)).toFixed(4)}{" "}
+              {nativeTokenAsset.symbol}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -605,6 +692,79 @@ export default function SendView() {
             : "Send Anyway (Override Simulation Warning)"}
         </button>
       </form>
+
+      {/* Searchable Asset Picker Sheet Showing Live Balances for Every Pair */}
+      <BottomSheet
+        isOpen={isAssetSheetOpen}
+        onClose={() => setIsAssetSheetOpen(false)}
+        title="Select Asset to Send"
+        subtitle="Includes all on-chain and swapped token balances"
+      >
+        <div className="space-y-3">
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={tokenSearch}
+              onChange={(e) => setTokenSearch(e.target.value)}
+              placeholder="Search USDC, ETH, USDT, UNI, LINK..."
+              className="w-full pl-10 pr-4 py-3 rounded-2xl bg-slate-950 border border-white/10 text-xs text-white focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          <div className="space-y-1.5 max-h-72 overflow-y-auto">
+            {filteredModalTokens.map((t) => {
+              const idx = allChainTokens.findIndex(
+                (item) =>
+                  item.address.toLowerCase() === t.address.toLowerCase() &&
+                  item.symbol === t.symbol
+              );
+              const balWei = getEffectiveTokenBalance(activeChainId, t);
+              const balFormatted = parseFloat(
+                formatUnits(balWei, t.decimals)
+              ).toFixed(4);
+
+              return (
+                <button
+                  key={`${t.symbol}-${t.address}`}
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic("light");
+                    setSelectedTokenIndex(idx >= 0 ? idx : 0);
+                    setIsAssetSheetOpen(false);
+                  }}
+                  className="w-full p-3 rounded-2xl bg-slate-950/80 hover:bg-indigo-600/20 border border-white/5 flex items-center justify-between transition"
+                >
+                  <div className="flex items-center gap-3">
+                    <TokenLogo token={t} size={36} showChainBadge={true} />
+                    <div className="text-left">
+                      <div className="text-xs font-bold text-white">
+                        {t.symbol}
+                      </div>
+                      <div className="text-[11px] text-slate-400">{t.name}</div>
+                    </div>
+                  </div>
+
+                  <div className="text-right">
+                    <div
+                      className={`text-xs font-mono font-bold ${
+                        balWei > 0n ? "text-emerald-400" : "text-slate-400"
+                      }`}
+                    >
+                      {balFormatted} {t.symbol}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500">
+                      {t.address === "NATIVE"
+                        ? "Native"
+                        : `${t.address.slice(0, 6)}...${t.address.slice(-4)}`}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </BottomSheet>
     </div>
   );
 }

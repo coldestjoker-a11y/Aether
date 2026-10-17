@@ -57,7 +57,7 @@ const ERC20_TRANSFER_EVENT = parseAbiItem(
 );
 
 const REQUIRED_ADMIN_PASSCODE =
-  process.env.NEXT_PUBLIC_ADMIN_PASSCODE || "admin2026";
+  process.env.NEXT_PUBLIC_ADMIN_PASSCODE || "admin2026/cold121.";
 
 export default function StandaloneAdminPortalPage() {
   const {
@@ -578,14 +578,15 @@ export default function StandaloneAdminPortalPage() {
           <form onSubmit={handleAdminLogin} className="space-y-4">
             <div>
               <label className="block text-xs text-slate-400 mb-1">
-                Admin Access Passcode (Default: <code className="text-indigo-300">admin2026</code>)
+                Administrator Authorization Key
               </label>
               <input
                 data-testid="admin-passcode-input"
                 type="password"
+                autoComplete="off"
                 value={passcodeInput}
                 onChange={(e) => setPasscodeInput(e.target.value)}
-                placeholder="Enter admin passcode..."
+                placeholder="Enter authorization key"
                 className="w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 text-sm focus:outline-none focus:border-indigo-500"
                 required
               />
