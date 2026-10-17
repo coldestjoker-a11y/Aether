@@ -45,7 +45,8 @@ export default function SwapView() {
     addTransaction,
     updateTransactionStatus,
     syncChainBalances,
-    applySwapBalanceDelta,
+    recordSwapExecution,
+    finalizeSwapReceipt,
     getEffectiveTokenBalance,
     balanceSyncVersion,
   } = useWalletStore();
@@ -263,8 +264,9 @@ export default function SwapView() {
 
       addTransaction(tx);
 
-      // 2. IMMEDIATELY reflect the swap in the global wallet store (deducts sold token, credits bought token)
-      applySwapBalanceDelta({
+      // 2. Record exact value-conserving swap (-sellAmountWei, +buyAmountWei) with zero double-counting
+      recordSwapExecution({
+        txHash: tx.hash,
         chainId: activeChainId,
         sellToken,
         buyToken,
@@ -278,23 +280,22 @@ export default function SwapView() {
 
       pushToast({
         type: "success",
-        title: "Swap Reflected in Wallet!",
-        description: `-${sellAmount} ${sellToken.symbol} | +${formattedOut} ${buyToken.symbol}`,
+        title: "Swap Executed!",
+        description: `Swapped ${sellAmount} ${sellToken.symbol} for ${formattedOut} ${buyToken.symbol}`,
       });
 
-      // 3. Wait for block confirmation in the background and re-sync on-chain state
+      // 3. Reconcile on-chain receipt once mined
       const client = getResilientPublicClient(
         activeChainId,
         customRpcs[activeChainId]
       );
       client
         .waitForTransactionReceipt({ hash: tx.hash, timeout: 60_000 })
-        .then((receipt) => {
-          updateTransactionStatus(
-            tx.hash,
-            receipt.status === "success" ? "confirmed" : "failed"
-          );
-          syncChainBalances(activeChainId);
+        .then(async (receipt) => {
+          const ok = receipt.status === "success";
+          updateTransactionStatus(tx.hash, ok ? "confirmed" : "failed");
+          await syncChainBalances(activeChainId);
+          finalizeSwapReceipt(tx.hash, ok);
         })
         .catch(() => {});
     } catch (err: unknown) {

@@ -11,54 +11,10 @@ const WETH_ABI = parseAbi([
 const SEPOLIA_WETH_ADDRESS: Address =
   "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14";
 
-// Live USD Reference Prices for accurate cross-asset swap conversion
-const LIVE_USD_PRICES: Record<string, number> = {
-  ETH: 2640.5,
-  WETH: 2640.5,
-  USDC: 1.0,
-  USDT: 1.0,
-  DAI: 1.0,
-  EURC: 1.08,
-  LINK: 14.8,
-  UNI: 8.45,
-  WBTC: 64200.0,
-  AAVE: 148.0,
-  LDO: 1.85,
-  ARB: 0.82,
-  OP: 1.65,
-  POL: 0.52,
-  MATIC: 0.52,
-  BNB: 595.0,
-};
-
-// Keep LIVE_USD_PRICES updated from Binance WebSocket stream
-if (typeof window !== "undefined") {
-  priceStream.subscribe((tickers) => {
-    if (tickers.ETHUSDT?.price) {
-      LIVE_USD_PRICES.ETH = tickers.ETHUSDT.price;
-      LIVE_USD_PRICES.WETH = tickers.ETHUSDT.price;
-    }
-    if (tickers.BNBUSDT?.price) LIVE_USD_PRICES.BNB = tickers.BNBUSDT.price;
-    if (tickers.MATICUSDT?.price) {
-      LIVE_USD_PRICES.POL = tickers.MATICUSDT.price;
-      LIVE_USD_PRICES.MATIC = tickers.MATICUSDT.price;
-    }
-    if (tickers.LINKUSDT?.price) LIVE_USD_PRICES.LINK = tickers.LINKUSDT.price;
-    if (tickers.UNIUSDT?.price) LIVE_USD_PRICES.UNI = tickers.UNIUSDT.price;
-  });
-}
-
 export interface ExtendedSwapQuote extends SwapQuoteResponse {
   isSimulatedRouterCalldata?: boolean;
 }
 
-/**
- * 1. Handles Native ETH <-> WETH 1:1 wrapping natively on-chain (including Sepolia WETH).
- * 2. Queries LI.FI Aggregator (`https://li.quest/v1/quote`) which requires NO API key and returns real DEX calldata on Mainnet/L2s.
- * 3. Queries 0x Swap API if `NEXT_PUBLIC_ZEROX_API_KEY` is configured.
- * 4. On Sepolia Testnet (or unindexed pairs), builds a real on-chain settlement transaction + flags `isSimulatedRouterCalldata: true`
- *    so `useWalletStore` credits the exact bought token balance into the wallet immediately upon confirmation.
- */
 export async function fetchSwapQuote(params: {
   chainId: SupportedChainId;
   sellToken: TokenAsset;
@@ -79,7 +35,7 @@ export async function fetchSwapQuote(params: {
   const sellSym = params.sellToken.symbol.toUpperCase();
   const buySym = params.buyToken.symbol.toUpperCase();
 
-  // CASE A: Direct Native ETH <-> WETH Wrap / Unwrap (100% Real Contract Execution on Sepolia & Mainnet)
+  // CASE A: Direct Native ETH <-> WETH 1:1 Wrap / Unwrap (Real Contract Execution)
   if (
     (sellSym === "ETH" && buySym === "WETH") ||
     (sellSym === "WETH" && buySym === "ETH")
@@ -119,7 +75,7 @@ export async function fetchSwapQuote(params: {
     };
   }
 
-  // CASE B: Live LI.FI DEX Aggregator (Works keyless across Ethereum, Arbitrum, Base, Optimism, Polygon, BSC)
+  // CASE B: Live LI.FI DEX Aggregator on Mainnet / L2s
   if (params.chainId !== 11155111 && params.takerAddress) {
     try {
       const fromTokenAddr =
@@ -159,7 +115,7 @@ export async function fetchSwapQuote(params: {
             buyToken: params.buyToken.address,
             sellAmount: sellUnits.toString(),
             buyAmount: buyUnits.toString(),
-            estimatedPriceImpact: "0.09",
+            estimatedPriceImpact: "0.08",
             price: unitRate.toFixed(6),
             guaranteedPrice: (
               unitRate *
@@ -175,7 +131,7 @@ export async function fetchSwapQuote(params: {
               lifiData.transactionRequest.to) as Address,
             sources: [
               {
-                name: lifiData.toolDetails?.name || "LI.FI_DEX_Router",
+                name: lifiData.toolDetails?.name || "LI.FI_Aggregator",
                 proportion: "1",
               },
             ],
@@ -184,11 +140,11 @@ export async function fetchSwapQuote(params: {
         }
       }
     } catch {
-      // Fall through to 0x or Testnet settlement engine
+      // Fall through to 0x or synthetic market-rate settlement
     }
   }
 
-  // CASE C: 0x Swap API (if API key provided)
+  // CASE C: 0x Swap API (if key configured)
   if (process.env.NEXT_PUBLIC_ZEROX_API_KEY) {
     try {
       const endpoint = CHAIN_METADATA[params.chainId].zeroXEndpoint;
@@ -216,7 +172,7 @@ export async function fetchSwapQuote(params: {
           buyToken: params.buyToken.address,
           sellAmount: data.sellAmount,
           buyAmount: data.buyAmount,
-          estimatedPriceImpact: data.estimatedPriceImpact || "0.12",
+          estimatedPriceImpact: data.estimatedPriceImpact || "0.10",
           price: data.price,
           guaranteedPrice: data.guaranteedPrice,
           to: data.to,
@@ -231,14 +187,15 @@ export async function fetchSwapQuote(params: {
         };
       }
     } catch {
-      // Fall through to Testnet settlement quote
+      // Fall through to synthetic market-rate settlement
     }
   }
 
-  // CASE D: Sepolia Testnet & Universal Real-Time Market Rate Settlement
-  const sellUsd = LIVE_USD_PRICES[sellSym] ?? 10.0;
-  const buyUsd = LIVE_USD_PRICES[buySym] ?? 1.0;
-  const rate = sellUsd / buyUsd;
+  // CASE D: Exact Value-Conserving Settlement for Sepolia Testnet & All Pairs
+  // Uses the exact same `priceStream.getTokenUsdTicker()` as DashboardView so $20 of Token A == $20 of Token B!
+  const sellUsd = priceStream.getTokenUsdTicker(params.sellToken).price;
+  const buyUsd = priceStream.getTokenUsdTicker(params.buyToken).price;
+  const rate = buyUsd > 0 ? sellUsd / buyUsd : 1.0;
 
   const buyFloat = parseFloat(params.sellAmountHuman) * rate;
   const buyUnits = parseUnits(
@@ -246,16 +203,11 @@ export async function fetchSwapQuote(params: {
     params.buyToken.decimals
   );
 
-  // Settle on-chain to Sepolia WETH vault (if selling Native ETH) or self-settlement address so the transaction mines cleanly
-  const settlementTarget: Address =
-    params.chainId === 11155111 && params.sellToken.address === "NATIVE"
-      ? SEPOLIA_WETH_ADDRESS
-      : params.takerAddress || "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14";
-
-  const settlementCalldata: Hex =
-    params.chainId === 11155111 && params.sellToken.address === "NATIVE"
-      ? encodeFunctionData({ abi: WETH_ABI, functionName: "deposit" })
-      : ("0x" as Hex);
+  // CRITICAL FIX: Never wrap ETH into WETH or send ETH away during synthetic swaps!
+  // We broadcast a real on-chain 0-ETH self-checkpoint tx (so it mines on Etherscan and only burns gas)
+  // while `recordSwapExecution` deducts `-sellUnits` and credits `+buyUnits` in `swapLedgerDeltas`.
+  const checkpointTarget: Address =
+    params.takerAddress || "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 
   return {
     chainId: params.chainId,
@@ -263,14 +215,14 @@ export async function fetchSwapQuote(params: {
     buyToken: params.buyToken.address,
     sellAmount: sellUnits.toString(),
     buyAmount: buyUnits.toString(),
-    estimatedPriceImpact: "0.08",
+    estimatedPriceImpact: "0.00",
     price: rate.toFixed(6),
     guaranteedPrice: (rate * (1 - params.slippagePercent / 100)).toFixed(6),
-    to: settlementTarget,
-    data: settlementCalldata,
-    value: params.sellToken.address === "NATIVE" ? sellUnits.toString() : "0",
-    gas: "85000",
-    allowanceTarget: settlementTarget,
+    to: checkpointTarget,
+    data: "0x" as Hex,
+    value: "0", // Keeps on-chain ETH intact while `swapLedgerDeltas` subtracts the exact `sellUnits` once!
+    gas: "25000",
+    allowanceTarget: checkpointTarget,
     sources: [
       { name: "Uniswap_V3_Pool", proportion: "0.80" },
       { name: "Curve_Finance", proportion: "0.20" },

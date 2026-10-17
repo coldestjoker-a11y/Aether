@@ -1,20 +1,49 @@
-type PriceTicker = {
+import { TokenAsset } from "@/types/wallet";
+
+export type PriceTicker = {
   price: number;
   change24h: number;
 };
 
 type PriceSubscriber = (prices: Record<string, PriceTicker>) => void;
 
+const STABLECOIN_SYMBOLS = new Set(["USDC", "USDT", "DAI", "FDUSD", "USDE", "BUSD"]);
+
+const FALLBACK_SYMBOL_USD: Record<string, PriceTicker> = {
+  ETH: { price: 2640.5, change24h: 2.85 },
+  WETH: { price: 2640.5, change24h: 2.85 },
+  USDC: { price: 1.0, change24h: 0.0 },
+  USDT: { price: 1.0, change24h: 0.0 },
+  DAI: { price: 1.0, change24h: 0.0 },
+  EURC: { price: 1.08, change24h: 0.15 },
+  LINK: { price: 14.8, change24h: 4.12 },
+  UNI: { price: 8.45, change24h: -1.15 },
+  WBTC: { price: 64200.0, change24h: 1.95 },
+  AAVE: { price: 148.0, change24h: 3.1 },
+  LDO: { price: 1.85, change24h: -0.8 },
+  ARB: { price: 0.82, change24h: 1.25 },
+  OP: { price: 1.65, change24h: 2.1 },
+  POL: { price: 0.52, change24h: 1.4 },
+  MATIC: { price: 0.52, change24h: 1.4 },
+  BNB: { price: 595.0, change24h: 0.92 },
+  PEPE: { price: 0.00001, change24h: 5.4 },
+  AERO: { price: 1.15, change24h: 3.8 },
+};
+
 class RealtimePriceStream {
   private ws: WebSocket | null = null;
   private subscribers = new Set<PriceSubscriber>();
   private cache: Record<string, PriceTicker> = {
     ETHUSDT: { price: 2640.5, change24h: 2.85 },
-    USDCUSDT: { price: 1.0, change24h: 0.01 },
+    USDCUSDT: { price: 1.0, change24h: 0.0 },
     LINKUSDT: { price: 14.8, change24h: 4.12 },
     UNIUSDT: { price: 8.45, change24h: -1.15 },
     MATICUSDT: { price: 0.52, change24h: 1.4 },
     BNBUSDT: { price: 595.0, change24h: 0.92 },
+    WBTCUSDT: { price: 64200.0, change24h: 1.95 },
+    AAVEUSDT: { price: 148.0, change24h: 3.1 },
+    ARBUSDT: { price: 0.82, change24h: 1.25 },
+    OPUSDT: { price: 1.65, change24h: 2.1 },
   };
   private throttleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -35,6 +64,35 @@ class RealtimePriceStream {
     };
   }
 
+  /**
+   * Single source of truth for token USD price across both Dashboard and Swap Aggregator.
+   * Ensures swapping $20 of Token A to Token B always equals $20 on the Dashboard.
+   */
+  public getTokenUsdTicker(
+    token: Pick<TokenAsset, "symbol" | "binanceSymbol">,
+    liveMap?: Record<string, PriceTicker>
+  ): PriceTicker {
+    const source = liveMap || this.cache;
+    const sym = token.symbol.toUpperCase();
+
+    if (STABLECOIN_SYMBOLS.has(sym)) {
+      return { price: 1.0, change24h: 0.0 };
+    }
+    if (sym === "WETH" || sym === "ETH") {
+      return source.ETHUSDT || FALLBACK_SYMBOL_USD.ETH;
+    }
+    if (token.binanceSymbol && source[token.binanceSymbol]) {
+      return source[token.binanceSymbol];
+    }
+    if (source[`${sym}USDT`]) {
+      return source[`${sym}USDT`];
+    }
+    if (FALLBACK_SYMBOL_USD[sym]) {
+      return FALLBACK_SYMBOL_USD[sym];
+    }
+    return { price: 1.0, change24h: 0.0 };
+  }
+
   private connectWebSocket() {
     try {
       const streams = [
@@ -43,6 +101,10 @@ class RealtimePriceStream {
         "maticusdt@ticker",
         "linkusdt@ticker",
         "uniusdt@ticker",
+        "wbtcusdt@ticker",
+        "aaveusdt@ticker",
+        "arbusdt@ticker",
+        "opusdt@ticker",
       ].join("/");
 
       this.ws = new WebSocket(
@@ -54,10 +116,23 @@ class RealtimePriceStream {
           const payload = JSON.parse(event.data);
           const data = payload?.data;
           if (data && data.s && data.c) {
+            const parsedPrice = parseFloat(data.c);
+            const parsedChange = parseFloat(data.P || "0");
             this.cache[data.s] = {
-              price: parseFloat(data.c),
-              change24h: parseFloat(data.P || "0"),
+              price: parsedPrice,
+              change24h: parsedChange,
             };
+            const baseSym = data.s.replace(/USDT$/, "");
+            FALLBACK_SYMBOL_USD[baseSym] = {
+              price: parsedPrice,
+              change24h: parsedChange,
+            };
+            if (baseSym === "ETH") {
+              FALLBACK_SYMBOL_USD.WETH = {
+                price: parsedPrice,
+                change24h: parsedChange,
+              };
+            }
             this.scheduleThrottledEmit();
           }
         } catch {
@@ -73,7 +148,6 @@ class RealtimePriceStream {
     }
   }
 
-  // Throttled to max 1 UI render dispatch every 800ms for 60fps performance
   private scheduleThrottledEmit() {
     if (this.throttleTimer) return;
     this.throttleTimer = setTimeout(() => {
@@ -86,7 +160,7 @@ class RealtimePriceStream {
   private async fetchCoinGeckoFallback() {
     try {
       const res = await fetch(
-        "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,binancecoin,matic-network,chainlink,uniswap&vs_currencies=usd&include_24hr_change=true"
+        "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,binancecoin,matic-network,chainlink,uniswap,wrapped-bitcoin,aave,arbitrum,optimism&vs_currencies=usd&include_24hr_change=true"
       );
       if (!res.ok) return;
       const json = await res.json();
@@ -98,7 +172,7 @@ class RealtimePriceStream {
       }
       this.scheduleThrottledEmit();
     } catch {
-      // Retain last cached prices on offline state
+      // Retain cached prices when offline
     }
   }
 }

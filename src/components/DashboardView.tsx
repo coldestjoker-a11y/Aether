@@ -132,15 +132,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
       .map((token) => {
         const raw = getEffectiveTokenBalance(activeChainId, token);
         const formatted = formatUnits(raw, token.decimals);
-        const ticker = prices[token.binanceSymbol || "ETHUSDT"] || {
-          price:
-            token.symbol === "USDC" ||
-            token.symbol === "USDT" ||
-            token.symbol === "DAI"
-              ? 1
-              : 2640.5,
-          change24h: 0,
-        };
+        const ticker = priceStream.getTokenUsdTicker(token, prices);
         const usdPrice = ticker.price * currencyMultiplier;
         const usdValue = parseFloat(formatted) * usdPrice;
 

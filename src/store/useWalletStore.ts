@@ -22,6 +22,14 @@ export function getTokenBalanceKey(
   return `${chainId}:${addressOrNative.toLowerCase()}`;
 }
 
+interface PendingSwapLock {
+  chainId: SupportedChainId;
+  sellKey: string;
+  buyKey: string;
+  sellAmountWei: string;
+  buyAmountWei: string;
+}
+
 interface WalletState {
   keystore: EncryptedKeystore | null;
   activeAddress: Address | null;
@@ -41,9 +49,10 @@ interface WalletState {
   currency: "USD" | "EUR" | "GBP";
   theme: "dark" | "light";
 
-  // Global Synchronized Balance Ledger (persisted so swaps & transfers reflect immediately)
-  onChainBalances: Record<string, string>; // key -> raw wei string
-  swapLedgerDeltas: Record<string, string>; // key -> signed wei delta string from settled swaps
+  // Strictly separated Raw RPC Balances vs Synthetic Ledger Deltas vs In-Flight Locks
+  onChainBalances: Record<string, string>;
+  swapLedgerDeltas: Record<string, string>;
+  pendingSwapLocks: Record<string, PendingSwapLock>; // txHash -> lock
   balanceSyncVersion: number;
 
   // Actions
@@ -67,9 +76,10 @@ interface WalletState {
     replacementHash?: Hex
   ) => void;
 
-  // Global Balance & Swap Reflection Actions
+  // Exact Swap Accounting Actions
   syncChainBalances: (chainId?: SupportedChainId) => Promise<void>;
-  applySwapBalanceDelta: (params: {
+  recordSwapExecution: (params: {
+    txHash: Hex;
     chainId: SupportedChainId;
     sellToken: TokenAsset;
     buyToken: TokenAsset;
@@ -77,6 +87,7 @@ interface WalletState {
     buyAmountWei: bigint;
     isSimulatedRouterCalldata: boolean;
   }) => void;
+  finalizeSwapReceipt: (txHash: Hex, succeeded: boolean) => void;
   getEffectiveTokenBalance: (
     chainId: SupportedChainId,
     token: TokenAsset
@@ -120,6 +131,7 @@ export const useWalletStore = create<WalletState>()(
 
       onChainBalances: {},
       swapLedgerDeltas: {},
+      pendingSwapLocks: {},
       balanceSyncVersion: 0,
 
       setVaultInitialized: (keystore, sessionPrivateKey) =>
@@ -209,8 +221,8 @@ export const useWalletStore = create<WalletState>()(
         })),
 
       /**
-       * Pulls live on-chain balances for all tokens on the active network
-       * and merges them into the global Zustand balance store.
+       * Pulls strictly the raw on-chain balances from the RPC.
+       * Never mixes optimistic deltas into `onChainBalances`, preventing double-counting!
        */
       syncChainBalances: async (targetChainId) => {
         const state = get();
@@ -245,7 +257,7 @@ export const useWalletStore = create<WalletState>()(
                 updated[key] = bal.toString();
               }
             } catch {
-              // Retain existing cached balance if a single RPC call times out
+              // Keep last known on-chain value on transient RPC timeout
             }
           })
         );
@@ -257,10 +269,15 @@ export const useWalletStore = create<WalletState>()(
       },
 
       /**
-       * Immediately updates the user's token balances when a Swap is executed,
-       * and ensures both the sold and bought tokens are visible in `customTokens`.
+       * Records a swap WITHOUT ever double-counting:
+       * - If `isSimulatedRouterCalldata` is true (Sepolia synthetic swap), the on-chain tx sends `0` value
+       *   (only burning gas), so we permanently record `-sellAmountWei` on `sellKey` and `+buyAmountWei` on `buyKey`
+       *   inside `swapLedgerDeltas`.
+       * - If `isSimulatedRouterCalldata` is false (real WETH wrap or Mainnet LI.FI/0x swap), we store a temporary
+       *   `pendingSwapLock` that is automatically removed the moment the block receipt confirms on-chain.
        */
-      applySwapBalanceDelta: ({
+      recordSwapExecution: ({
+        txHash,
         chainId,
         sellToken,
         buyToken,
@@ -272,7 +289,6 @@ export const useWalletStore = create<WalletState>()(
           const sellKey = getTokenBalanceKey(chainId, sellToken.address);
           const buyKey = getTokenBalanceKey(chainId, buyToken.address);
 
-          // Ensure both tokens exist in customTokens so the bought token appears on Dashboard
           const updatedTokens = [...state.customTokens];
           [sellToken, buyToken].forEach((tok) => {
             const exists = updatedTokens.some(
@@ -283,53 +299,76 @@ export const useWalletStore = create<WalletState>()(
             if (!exists) updatedTokens.unshift(tok);
           });
 
-          // 1. Optimistically update onChainBalances immediately for instant UI reflection
-          const currentSellRaw = BigInt(state.onChainBalances[sellKey] || "0");
-          const currentBuyRaw = BigInt(state.onChainBalances[buyKey] || "0");
-
-          const nextSellRaw =
-            currentSellRaw > sellAmountWei ? currentSellRaw - sellAmountWei : 0n;
-          const nextBuyRaw = currentBuyRaw + buyAmountWei;
-
-          const nextOnChain = {
-            ...state.onChainBalances,
-            [sellKey]: nextSellRaw.toString(),
-            [buyKey]: nextBuyRaw.toString(),
-          };
-
-          // 2. If the swap used Testnet synthetic settlement (where no external DEX pool minted the ERC-20),
-          // persist the swap ledger delta so subsequent RPC block polls preserve the swapped token balance!
-          const nextDeltas = { ...state.swapLedgerDeltas };
           if (isSimulatedRouterCalldata) {
-            // If native ETH was sent in `value`, the chain already deducts `sellAmountWei` from ETH balance,
-            // so we only need a ledger delta for ERC-20 sell tokens and the bought token.
-            if (sellToken.address !== "NATIVE") {
-              const prevSellDelta = BigInt(nextDeltas[sellKey] || "0");
-              nextDeltas[sellKey] = (prevSellDelta - sellAmountWei).toString();
-            }
+            const nextDeltas = { ...state.swapLedgerDeltas };
+            const prevSellDelta = BigInt(nextDeltas[sellKey] || "0");
             const prevBuyDelta = BigInt(nextDeltas[buyKey] || "0");
-            nextDeltas[buyKey] = (prevBuyDelta + buyAmountWei).toString();
-          }
 
+            nextDeltas[sellKey] = (prevSellDelta - sellAmountWei).toString();
+            nextDeltas[buyKey] = (prevBuyDelta + buyAmountWei).toString();
+
+            return {
+              customTokens: updatedTokens,
+              swapLedgerDeltas: nextDeltas,
+              balanceSyncVersion: state.balanceSyncVersion + 1,
+            };
+          } else {
+            return {
+              customTokens: updatedTokens,
+              pendingSwapLocks: {
+                ...state.pendingSwapLocks,
+                [txHash.toLowerCase()]: {
+                  chainId,
+                  sellKey,
+                  buyKey,
+                  sellAmountWei: sellAmountWei.toString(),
+                  buyAmountWei: buyAmountWei.toString(),
+                },
+              },
+              balanceSyncVersion: state.balanceSyncVersion + 1,
+            };
+          }
+        });
+      },
+
+      /**
+       * Clears the temporary pending lock once a real router swap is mined on-chain
+       * so the newly fetched RPC balance takes over seamlessly.
+       */
+      finalizeSwapReceipt: (txHash, _succeeded) => {
+        set((state) => {
+          const nextLocks = { ...state.pendingSwapLocks };
+          delete nextLocks[txHash.toLowerCase()];
           return {
-            customTokens: updatedTokens,
-            onChainBalances: nextOnChain,
-            swapLedgerDeltas: nextDeltas,
+            pendingSwapLocks: nextLocks,
             balanceSyncVersion: state.balanceSyncVersion + 1,
           };
         });
       },
 
       /**
-       * Returns the live on-chain balance combined with any settled Testnet swap deltas.
+       * Computes the exact balance for any token:
+       * `rawOnChainBalance + permanentSyntheticDelta + activePendingSwapLocks`
        */
       getEffectiveTokenBalance: (chainId, token) => {
         const state = get();
         const key = getTokenBalanceKey(chainId, token.address);
         const rawChain = BigInt(state.onChainBalances[key] || "0");
-        const delta = BigInt(state.swapLedgerDeltas[key] || "0");
-        const combined = rawChain + delta;
-        return combined > 0n ? combined : 0n;
+        const permanentDelta = BigInt(state.swapLedgerDeltas[key] || "0");
+
+        let pendingDelta = 0n;
+        Object.values(state.pendingSwapLocks).forEach((lock) => {
+          if (lock.chainId !== chainId) return;
+          if (lock.sellKey === key) {
+            pendingDelta -= BigInt(lock.sellAmountWei);
+          }
+          if (lock.buyKey === key) {
+            pendingDelta += BigInt(lock.buyAmountWei);
+          }
+        });
+
+        const total = rawChain + permanentDelta + pendingDelta;
+        return total > 0n ? total : 0n;
       },
 
       setAutoLockMinutes: (minutes) => set({ autoLockMinutes: minutes }),
@@ -348,11 +387,12 @@ export const useWalletStore = create<WalletState>()(
           knownRecipients: [],
           onChainBalances: {},
           swapLedgerDeltas: {},
+          pendingSwapLocks: {},
           biometricCredentialId: null,
         }),
     }),
     {
-      name: "aethervault-storage-v1",
+      name: "aethervault-storage-v2", // Bumped storage key to clear any corrupted v1 double-counted deltas
       partialize: (state) => ({
         keystore: state.keystore,
         activeAddress: state.activeAddress,
