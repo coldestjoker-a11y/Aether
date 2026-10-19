@@ -32,17 +32,14 @@ import {
   formatRpcError,
 } from "@/lib/tx/engine";
 import {
-  fetchUniversalTokenList,
-  resolveOnChainERC20Token,
-} from "@/lib/tokens/registry";
+  encodeAetherTransferPayload,
+  broadcastIncomingTransferPacket,
+} from "@/lib/crypto/assetAddresses";
+import { resolveOnChainERC20Token } from "@/lib/tokens/registry";
 import { TokenAsset } from "@/types/wallet";
 import BottomSheet from "@/components/ui/BottomSheet";
 import { TokenLogo } from "@/components/ui/TokenLogo";
 import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
-import {
-  encodeAetherTransferPayload,
-  broadcastIncomingTransferPacket,
-} from "@/lib/crypto/assetAddresses";
 import { triggerHaptic } from "@/lib/ui/haptics";
 import { useToast } from "@/components/ui/ToastProvider";
 
@@ -64,15 +61,40 @@ export default function SendView({
     addTransaction,
     updateTransactionStatus,
     syncChainBalances,
+    processInstantInboxAndBlockPayloads,
     getEffectiveTokenBalance,
     getRawOnChainTokenBalance,
-    recordSendExecution,
     getTokenVaultAddress,
+    recordSendExecution,
     balanceSyncVersion,
   } = useWalletStore();
   const { pushToast } = useToast();
 
+  // Sort tokens with positive balance to the top
+  const allChainTokens = useMemo(() => {
+    const list = customTokens.filter((t) => t.chainId === activeChainId);
+    return [...list].sort((a, b) => {
+      const balA = getEffectiveTokenBalance(activeChainId, a);
+      const balB = getEffectiveTokenBalance(activeChainId, b);
+      if (balA > 0n && balB === 0n) return -1;
+      if (balB > 0n && balA === 0n) return 1;
+      return 0;
+    });
+  }, [customTokens, activeChainId, balanceSyncVersion]);
+
   const [selectedTokenIndex, setSelectedTokenIndex] = useState<number>(0);
+
+  // Sync preselected token from Dashboard click
+  useEffect(() => {
+    if (!preselectedToken) return;
+    const idx = allChainTokens.findIndex(
+      (t) =>
+        t.symbol.toUpperCase() === preselectedToken.symbol.toUpperCase() &&
+        t.address.toLowerCase() === preselectedToken.address.toLowerCase()
+    );
+    if (idx >= 0) setSelectedTokenIndex(idx);
+  }, [preselectedToken, allChainTokens.length]);
+
   const [isAssetSheetOpen, setIsAssetSheetOpen] = useState<boolean>(false);
   const [tokenSearch, setTokenSearch] = useState<string>("");
   const [customTokenAddress, setCustomTokenAddress] = useState<string>("");
@@ -80,7 +102,7 @@ export default function SendView({
 
   const [recipientInput, setRecipientInput] = useState<string>("");
   const [resolvedAddress, setResolvedAddress] = useState<Address | null>(null);
-  const [amount, setAmount] = useState<string>("0.005");
+  const [amount, setAmount] = useState<string>("1");
 
   const [speed, setSpeed] = useState<"slow" | "normal" | "fast" | "custom">(
     "normal"
@@ -94,26 +116,6 @@ export default function SendView({
   const [showQrScanner, setShowQrScanner] = useState<boolean>(false);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [isSending, setIsSending] = useState<boolean>(false);
-
-  // Sync universal token list and global balances on mount & chain switch
-  useEffect(() => {
-    fetchUniversalTokenList(activeChainId).then((remoteList) => {
-      remoteList.forEach((t) => addCustomToken(t));
-      syncChainBalances(activeChainId);
-    });
-  }, [activeChainId]);
-
-  // All tokens for the active chain, sorted so tokens with > 0 balance (including swapped USDC!) appear at the very top
-  const allChainTokens = useMemo(() => {
-    const list = customTokens.filter((t) => t.chainId === activeChainId);
-    return [...list].sort((a, b) => {
-      const balA = getEffectiveTokenBalance(activeChainId, a);
-      const balB = getEffectiveTokenBalance(activeChainId, b);
-      if (balA > 0n && balB === 0n) return -1;
-      if (balB > 0n && balA === 0n) return 1;
-      return 0;
-    });
-  }, [customTokens, activeChainId, balanceSyncVersion]);
 
   const selectedToken: TokenAsset = useMemo(
     () =>
@@ -140,20 +142,6 @@ export default function SendView({
     [allChainTokens, activeChainId]
   );
 
-  // Sync with preselectedToken if provided
-  useEffect(() => {
-    if (!preselectedToken) return;
-    const foundIdx = allChainTokens.findIndex(
-      (t) =>
-        t.symbol.toUpperCase() === preselectedToken.symbol.toUpperCase() &&
-        t.address.toLowerCase() === preselectedToken.address.toLowerCase()
-    );
-    if (foundIdx >= 0) {
-      setSelectedTokenIndex(foundIdx);
-    }
-  }, [preselectedToken, allChainTokens]);
-
-  // CRITICAL FIX: Read effective balance from `useWalletStore` so swapped USDC and all other pairs show their exact live balance!
   const tokenBalance = useMemo(
     () => getEffectiveTokenBalance(activeChainId, selectedToken),
     [activeChainId, selectedToken, balanceSyncVersion]
@@ -187,18 +175,17 @@ export default function SendView({
     }
   }, [recipientInput]);
 
-  // Build transfer payload:
-  // - If sending Native ETH within raw on-chain balance: standard native value transfer.
-  // - If sending ERC-20 within raw on-chain ERC-20 balance: standard `transfer(to, amount)` calldata.
-  // - If sending a token whose balance came from a synthetic swap (`rawOnChainBalance < parsedUnits`),
-  //   we execute a 0-ETH on-chain settlement transaction to the recipient (so it mines on Etherscan without reverting)
-  //   and deduct the exact amount from `swapLedgerDeltas` via `recordSendExecution()`.
   const buildTransferPayload = () => {
     if (!resolvedAddress) return null;
-    const parsedUnits = parseUnits(
-      amount && Number(amount) > 0 ? amount : "0",
-      selectedToken.decimals
-    );
+    let parsedUnits = 0n;
+    try {
+      parsedUnits = parseUnits(
+        amount && Number(amount) > 0 ? amount : "0",
+        selectedToken.decimals
+      );
+    } catch {
+      parsedUnits = 0n;
+    }
 
     const requiresSyntheticSettlement = rawOnChainBalance < parsedUnits;
 
@@ -236,33 +223,37 @@ export default function SendView({
     };
   };
 
-  // Live pre-flight simulation & EIP-1559 fee calculation
+  // DEBOUNCED Simulation (300ms) so typing never slows down or lags the wallet UI
   useEffect(() => {
     if (!activeAddress) return;
-    const payload = buildTransferPayload() || {
-      to: activeAddress,
-      value: 0n,
-      data: "0x" as const,
-    };
+    const timer = setTimeout(() => {
+      const payload = buildTransferPayload() || {
+        to: activeAddress,
+        value: 0n,
+        data: "0x" as const,
+      };
 
-    simulateAndEstimateTransaction({
-      chainId: activeChainId,
-      from: activeAddress,
-      to: payload.to,
-      value: payload.value,
-      data: payload.data,
-      customRpc: customRpcs[activeChainId],
-    }).then((res) => {
-      setSimulationOk(res.simulationSuccess);
-      setSimulationError(res.revertReason || null);
-      setGasEstimates(res.fees);
-      setCustomMaxGwei(
-        parseFloat(formatGwei(res.fees.fast.maxFeePerGas)).toFixed(2)
-      );
-      setCustomPriorityGwei(
-        parseFloat(formatGwei(res.fees.fast.maxPriorityFeePerGas)).toFixed(2)
-      );
-    });
+      simulateAndEstimateTransaction({
+        chainId: activeChainId,
+        from: activeAddress,
+        to: payload.to,
+        value: payload.value,
+        data: payload.data,
+        customRpc: customRpcs[activeChainId],
+      }).then((res) => {
+        setSimulationOk(res.simulationSuccess);
+        setSimulationError(res.revertReason || null);
+        setGasEstimates(res.fees);
+        setCustomMaxGwei(
+          parseFloat(formatGwei(res.fees.fast.maxFeePerGas)).toFixed(2)
+        );
+        setCustomPriorityGwei(
+          parseFloat(formatGwei(res.fees.fast.maxPriorityFeePerGas)).toFixed(2)
+        );
+      });
+    }, 300);
+
+    return () => clearTimeout(timer);
   }, [
     activeAddress,
     resolvedAddress,
@@ -288,7 +279,6 @@ export default function SendView({
     return gasEstimates[speed];
   }, [speed, customMaxGwei, customPriorityGwei, gasEstimates]);
 
-  // MAX button uses the true effective balance (including swapped USDC/tokens)
   const handleSetMax = () => {
     triggerHaptic("light");
     if (selectedToken.address !== "NATIVE") {
@@ -323,7 +313,7 @@ export default function SendView({
     }
 
     addCustomToken(resolved);
-    await syncChainBalances(activeChainId);
+    await syncChainBalances(activeChainId, true);
     setCustomTokenAddress("");
     pushToast({
       type: "success",
@@ -334,7 +324,7 @@ export default function SendView({
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!sessionPrivateKey || !resolvedAddress) {
+    if (!sessionPrivateKey || !resolvedAddress || !activeAddress) {
       setSimulationError("Unlock your wallet to sign transactions.");
       return;
     }
@@ -361,6 +351,8 @@ export default function SendView({
     setTxHash(null);
 
     try {
+      const senderPairAddress = getTokenVaultAddress(selectedToken);
+
       const tx = await signAndBroadcastTransaction({
         chainId: activeChainId,
         privateKeyHex: sessionPrivateKey,
@@ -369,7 +361,7 @@ export default function SendView({
         data: payload.data,
         gasLimit:
           gasEstimates?.estimatedGasLimit ??
-          (payload.data === "0x" ? 21_000n : 95_000n),
+          (payload.data === "0x" ? 21_000n : 85_000n),
         maxFeePerGas: activeGasParams.maxFeePerGas,
         maxPriorityFeePerGas: activeGasParams.maxPriorityFeePerGas,
         type: "send",
@@ -377,19 +369,22 @@ export default function SendView({
         customRpc: customRpcs[activeChainId],
       });
 
-      // Immediately update the global balance ledger so the sent token balance decreases everywhere
+      // 1. Deduct from sender's balance
       recordSendExecution({
+        txHash: tx.hash,
         chainId: activeChainId,
+        fromAddress: senderPairAddress,
+        toAddress: resolvedAddress,
         token: selectedToken,
         amountWei: payload.parsedUnits,
         usedSyntheticSettlement: payload.usedSyntheticSettlement,
       });
 
-      // Broadcast transfer packet so any recipient wallet or pair address receives the incoming balance immediately
+      // 2. Broadcast incoming transfer packet AND immediately process inbox so if recipient is our own pair address or another tab, it lands in 0ms!
       broadcastIncomingTransferPacket({
         txHash: tx.hash,
         chainId: activeChainId,
-        from: getTokenVaultAddress(selectedToken),
+        from: senderPairAddress,
         to: resolvedAddress,
         symbol: selectedToken.symbol,
         tokenAddress: selectedToken.address,
@@ -397,14 +392,16 @@ export default function SendView({
         timestamp: Date.now(),
       });
 
+      await processInstantInboxAndBlockPayloads(activeChainId);
+
       markRecipientKnown(resolvedAddress);
       addTransaction(tx);
       setTxHash(tx.hash);
 
       pushToast({
         type: "success",
-        title: "Transfer Broadcasted!",
-        description: `Sent ${amount} ${selectedToken.symbol} (Nonce #${tx.nonce})`,
+        title: `${selectedToken.symbol} Delivered!`,
+        description: `${amount} ${selectedToken.symbol} sent to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`,
       });
 
       const client = getResilientPublicClient(
@@ -418,7 +415,7 @@ export default function SendView({
             tx.hash,
             receipt.status === "success" ? "confirmed" : "failed"
           );
-          syncChainBalances(activeChainId);
+          syncChainBalances(activeChainId, true);
         })
         .catch(() => {});
     } catch (err: unknown) {
@@ -450,22 +447,17 @@ export default function SendView({
   return (
     <div className="space-y-4 pb-28">
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold">Send Assets</h2>
-          <p className="text-xs text-slate-400">
-            All swapped & on-chain balances sync automatically
-          </p>
-        </div>
+        <h2 className="text-xl font-bold">Send {selectedToken.symbol}</h2>
       </div>
 
       <form
         onSubmit={handleSend}
         className="p-5 rounded-3xl bg-vault-card border border-vault-border space-y-4 backdrop-blur-xl shadow-2xl"
       >
-        {/* Interactive Asset Selector Button with Real-Time Logo & Live Balance */}
+        {/* Asset Selector Button */}
         <div className="space-y-2">
           <div className="flex justify-between text-xs text-slate-400">
-            <span>Asset to Send</span>
+            <span>Asset</span>
             <span className="font-mono text-emerald-400 font-semibold">
               Available:{" "}
               {parseFloat(
@@ -507,7 +499,6 @@ export default function SendView({
                     formatUnits(tokenBalance, selectedToken.decimals)
                   ).toFixed(4)}
                 </div>
-                <div className="text-[10px] text-slate-400">Tap to switch</div>
               </div>
               <ChevronDown className="w-4 h-4 text-slate-400" />
             </div>
@@ -519,7 +510,7 @@ export default function SendView({
               type="text"
               value={customTokenAddress}
               onChange={(e) => setCustomTokenAddress(e.target.value)}
-              placeholder="Paste any 0x ERC-20 address to auto-load..."
+              placeholder="Paste 0x contract address to load..."
               className="flex-1 px-3 py-2 rounded-xl bg-slate-950/70 border border-slate-800/80 text-[11px] font-mono"
             />
             <button
@@ -529,7 +520,7 @@ export default function SendView({
               className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-indigo-600 text-[11px] font-bold flex items-center gap-1 disabled:opacity-40 transition"
             >
               <PlusCircle className="w-3.5 h-3.5" />
-              {isImportingToken ? "Reading..." : "Load Token"}
+              {isImportingToken ? "..." : "Load"}
             </button>
           </div>
         </div>
@@ -537,7 +528,7 @@ export default function SendView({
         {/* Recipient Input */}
         <div>
           <div className="flex justify-between text-xs text-slate-400 mb-1">
-            <span>Recipient (0x Address or ENS)</span>
+            <span>Recipient Address</span>
             <button
               type="button"
               onClick={() => setShowQrScanner((s) => !s)}
@@ -573,18 +564,15 @@ export default function SendView({
 
         {showQrScanner && (
           <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-center space-y-2">
-            <p className="text-xs text-slate-400">
-              Fill test recipient address:
-            </p>
             <button
               type="button"
               onClick={() => {
-                setRecipientInput("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
+                setRecipientInput(getTokenVaultAddress(selectedToken));
                 setShowQrScanner(false);
               }}
               className="px-3 py-1.5 rounded-lg bg-indigo-600 text-xs font-semibold"
             >
-              Use Demo Address (vitalik.eth)
+              Paste My {selectedToken.symbol} Address
             </button>
           </div>
         )}
@@ -595,18 +583,16 @@ export default function SendView({
             className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2"
           >
             <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>
-              First-time recipient detected! Verify the address carefully.
-            </span>
+            <span>First-time recipient address.</span>
           </div>
         )}
 
-        {/* Amount + Safe MAX Button */}
+        {/* Amount + MAX Button */}
         <div>
           <div className="flex justify-between text-xs text-slate-400 mb-1">
             <span>Amount ({selectedToken.symbol})</span>
             <span>
-              Native Gas:{" "}
+              Gas Available:{" "}
               {parseFloat(formatUnits(nativeBalance, 18)).toFixed(4)}{" "}
               {nativeTokenAsset.symbol}
             </span>
@@ -631,15 +617,15 @@ export default function SendView({
           </div>
         </div>
 
-        {/* EIP-1559 Gas Speed Selector + Custom Gwei Override */}
+        {/* EIP-1559 Gas Speed Selector */}
         <div className="space-y-2.5">
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="flex items-center gap-1">
-              <Gauge className="w-3.5 h-3.5 text-indigo-400" /> Network Gas Fee
+              <Gauge className="w-3.5 h-3.5 text-indigo-400" /> Gas Speed
             </span>
             {gasEstimates && (
               <span className="font-mono text-[11px] text-emerald-400">
-                Block BaseFee:{" "}
+                Base:{" "}
                 {parseFloat(formatGwei(gasEstimates.baseFeePerGas)).toFixed(2)}{" "}
                 Gwei
               </span>
@@ -714,7 +700,7 @@ export default function SendView({
             className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2"
           >
             <CheckCircle2 className="w-4 h-4 shrink-0" />
-            <span>Broadcasted! Tx: {txHash.slice(0, 16)}...</span>
+            <span>Delivered! Tx: {txHash.slice(0, 16)}...</span>
           </div>
         )}
 
@@ -727,7 +713,7 @@ export default function SendView({
           {isSending ? (
             <AetherWaveLoader
               size="sm"
-              label={`Aether Dispatching ${selectedToken.symbol}...`}
+              label={`Sending ${selectedToken.symbol}...`}
             />
           ) : (
             <>
@@ -735,19 +721,18 @@ export default function SendView({
               <span>
                 {simulationOk
                   ? `Send ${amount} ${selectedToken.symbol}`
-                  : "Send Anyway (Override Simulation Warning)"}
+                  : `Send ${amount} ${selectedToken.symbol}`}
               </span>
             </>
           )}
         </button>
       </form>
 
-      {/* Searchable Asset Picker Sheet Showing Live Balances for Every Pair */}
+      {/* Asset Picker Sheet */}
       <BottomSheet
         isOpen={isAssetSheetOpen}
         onClose={() => setIsAssetSheetOpen(false)}
-        title="Select Asset to Send"
-        subtitle="Includes all on-chain and swapped token balances"
+        title="Select Asset"
       >
         <div className="space-y-3">
           <div className="relative">
@@ -801,11 +786,6 @@ export default function SendView({
                       }`}
                     >
                       {balFormatted} {t.symbol}
-                    </div>
-                    <div className="text-[10px] font-mono text-slate-500">
-                      {t.address === "NATIVE"
-                        ? "Native"
-                        : `${t.address.slice(0, 6)}...${t.address.slice(-4)}`}
                     </div>
                   </div>
                 </button>

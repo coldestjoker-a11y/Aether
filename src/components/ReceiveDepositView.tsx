@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { Copy, Check, CreditCard, Layers, ShieldCheck } from "lucide-react";
+import { Copy, Check, CreditCard, Layers } from "lucide-react";
 import { useWalletStore } from "@/store/useWalletStore";
 import { CHAIN_METADATA } from "@/lib/chains/config";
 import { TokenAsset } from "@/types/wallet";
@@ -93,10 +93,10 @@ export default function ReceiveDepositView({
 
       {mode === "receive" && (
         <div className="p-6 rounded-3xl bg-vault-card border border-vault-border text-center space-y-4">
-          {/* Asset Pair Selector for Dedicated Address */}
+          {/* Asset Selector */}
           <div className="text-left">
             <label className="text-[11px] text-slate-400 block mb-1.5">
-              Select Asset Pair Vault ({CHAIN_METADATA[activeChainId].name})
+              Asset ({CHAIN_METADATA[activeChainId].name})
             </label>
             <div className="flex items-center gap-2">
               <TokenLogo token={selectedToken} size={34} showChainBadge={true} />
@@ -107,7 +107,7 @@ export default function ReceiveDepositView({
               >
                 {chainTokens.map((t, i) => (
                   <option key={`${t.symbol}-${t.address}`} value={i}>
-                    {t.symbol} — Dedicated {t.symbol} Vault Address
+                    {t.symbol} ({t.name})
                   </option>
                 ))}
               </select>
@@ -123,16 +123,9 @@ export default function ReceiveDepositView({
             ))}
           </div>
 
-          <div className="space-y-1.5 text-left">
-            <div className="flex items-center justify-between text-[11px] text-indigo-300 font-semibold">
-              <span>{selectedToken?.symbol} Vault Address</span>
-              <span className="flex items-center gap-1 text-emerald-400">
-                <ShieldCheck className="w-3.5 h-3.5" /> Auto-Synced
-              </span>
-            </div>
-            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs break-all text-white">
-              {dedicatedPairAddress}
-            </div>
+          {/* Clean Address Row — No Labels */}
+          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs break-all text-white text-center">
+            {dedicatedPairAddress}
           </div>
 
           <button
@@ -144,9 +137,7 @@ export default function ReceiveDepositView({
             ) : (
               <Copy className="w-4 h-4" />
             )}
-            {copiedPair
-              ? `Copied ${selectedToken?.symbol} Address!`
-              : `Copy ${selectedToken?.symbol} Address`}
+            {copiedPair ? "Copied Address!" : "Copy Address"}
           </button>
         </div>
       )}
@@ -187,8 +178,7 @@ export default function ReceiveDepositView({
             <span>LI.FI Cross-Chain Bridge</span>
           </div>
           <p className="text-xs text-slate-400">
-            Bridge assets directly into your {selectedToken?.symbol} Vault (
-            {dedicatedPairAddress?.slice(0, 8)}...).
+            Bridge assets directly to {dedicatedPairAddress?.slice(0, 8)}...
           </p>
         </div>
       )}

@@ -569,7 +569,6 @@ export default function DashboardView({ onNavigateTab }: Props) {
             ? `${selectedAssetDetail.name} (${selectedAssetDetail.symbol})`
             : "Asset"
         }
-        subtitle={`Dedicated ${selectedAssetDetail?.symbol} Vault on ${currentChainMeta.name}`}
       >
         {selectedAssetDetail && (
           <div className="space-y-4">
@@ -581,7 +580,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
                   showChainBadge={true}
                 />
                 <div>
-                  <div className="text-xs text-slate-400">Available Balance</div>
+                  <div className="text-xs text-slate-400">Balance</div>
                   <div className="text-xl font-bold font-mono mt-0.5">
                     {selectedAssetDetail.formattedBalance}{" "}
                     {selectedAssetDetail.symbol}
@@ -589,7 +588,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-xs text-slate-400">USD Value</div>
+                <div className="text-xs text-slate-400">Value</div>
                 <div className="text-lg font-bold text-emerald-400 mt-0.5">
                   {currencySymbol}
                   {selectedAssetDetail.usdValue.toFixed(2)}
@@ -597,40 +596,31 @@ export default function DashboardView({ onNavigateTab }: Props) {
               </div>
             </div>
 
-            {/* Dedicated Per-Pair Vault Address Card */}
-            <div className="p-3.5 rounded-2xl bg-slate-950/90 border border-indigo-500/30 space-y-2">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-indigo-300 font-bold">
-                  Dedicated {selectedAssetDetail.symbol} Receive Address
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!selectedTokenDedicatedAddress) return;
-                    navigator.clipboard.writeText(selectedTokenDedicatedAddress);
-                    setCopiedAssetAddr(true);
-                    triggerHaptic("success");
-                    setTimeout(() => setCopiedAssetAddr(false), 1800);
-                  }}
-                  className="text-emerald-400 font-semibold flex items-center gap-1"
-                >
-                  {copiedAssetAddr ? (
-                    <>
-                      <Check className="w-3 h-3" /> Copied
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3 h-3" /> Copy Address
-                    </>
-                  )}
-                </button>
-              </div>
-              <div className="font-mono text-[11px] text-slate-300 break-all bg-slate-900 p-2.5 rounded-xl border border-white/5">
+            {/* Clean Address Row — No Labels */}
+            <div className="p-3 rounded-2xl bg-slate-950/90 border border-white/10 flex items-center justify-between gap-2">
+              <span className="font-mono text-xs text-slate-200 truncate">
                 {selectedTokenDedicatedAddress}
-              </div>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!selectedTokenDedicatedAddress) return;
+                  navigator.clipboard.writeText(selectedTokenDedicatedAddress);
+                  setCopiedAssetAddr(true);
+                  triggerHaptic("success");
+                  setTimeout(() => setCopiedAssetAddr(false), 1800);
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-emerald-400 text-xs font-semibold flex items-center gap-1 shrink-0"
+              >
+                {copiedAssetAddr ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+              </button>
             </div>
 
-            {/* STRICTLY SEND & RECEIVE BUTTONS ONLY */}
+            {/* Strictly Send & Receive Only */}
             <div className="grid grid-cols-2 gap-3 pt-1">
               <motion.button
                 whileTap={{ scale: 0.96 }}
@@ -643,7 +633,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
                 className="py-3.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 font-bold text-xs text-white flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25"
               >
                 <ArrowUpRight className="w-4 h-4" />
-                Send {selectedAssetDetail.symbol}
+                Send
               </motion.button>
 
               <motion.button
@@ -657,7 +647,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
                 className="py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 font-bold text-xs text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25"
               >
                 <ArrowDownLeft className="w-4 h-4" />
-                Receive {selectedAssetDetail.symbol}
+                Receive
               </motion.button>
             </div>
           </div>
