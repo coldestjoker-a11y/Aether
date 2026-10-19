@@ -1,38 +1,69 @@
 "use client";
 
-import React, { useState } from "react";
-import { Copy, Check, CreditCard, Layers } from "lucide-react";
+import React, { useState, useMemo } from "react";
+import { Copy, Check, CreditCard, Layers, ShieldCheck } from "lucide-react";
 import { useWalletStore } from "@/store/useWalletStore";
 import { CHAIN_METADATA } from "@/lib/chains/config";
+import { TokenAsset } from "@/types/wallet";
+import { TokenLogo } from "@/components/ui/TokenLogo";
+import { triggerHaptic } from "@/lib/ui/haptics";
 
 export default function ReceiveDepositView({
   initialMode = "receive",
+  preselectedToken,
 }: {
   initialMode?: "receive" | "deposit";
+  preselectedToken?: TokenAsset | null;
 }) {
-  const { activeAddress, activeChainId } = useWalletStore();
+  const {
+    activeAddress,
+    activeChainId,
+    customTokens,
+    getTokenVaultAddress,
+  } = useWalletStore();
+
+  const chainTokens = useMemo(
+    () => customTokens.filter((t) => t.chainId === activeChainId),
+    [customTokens, activeChainId]
+  );
+
+  const initialIdx = useMemo(() => {
+    if (!preselectedToken) return 0;
+    const found = chainTokens.findIndex(
+      (t) =>
+        t.symbol.toUpperCase() === preselectedToken.symbol.toUpperCase() &&
+        t.address.toLowerCase() === preselectedToken.address.toLowerCase()
+    );
+    return found >= 0 ? found : 0;
+  }, [chainTokens, preselectedToken]);
+
+  const [selectedIdx, setSelectedIdx] = useState<number>(initialIdx);
   const [mode, setMode] = useState<"receive" | "onramp" | "bridge">(
     initialMode === "deposit" ? "onramp" : "receive"
   );
-  const [copied, setCopied] = useState(false);
+  const [copiedPair, setCopiedPair] = useState(false);
 
-  const copyAddr = () => {
-    if (!activeAddress) return;
-    navigator.clipboard.writeText(activeAddress);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+  const selectedToken = chainTokens[selectedIdx] || chainTokens[0];
+  const dedicatedPairAddress = selectedToken
+    ? getTokenVaultAddress(selectedToken)
+    : activeAddress;
+
+  const copyPairAddr = () => {
+    if (!dedicatedPairAddress) return;
+    navigator.clipboard.writeText(dedicatedPairAddress);
+    setCopiedPair(true);
+    triggerHaptic("success");
+    setTimeout(() => setCopiedPair(false), 1800);
   };
 
-  // Deterministic visual QR matrix from address bytes
   const qrCells = Array.from({ length: 121 }, (_, idx) => {
-    const charCode = (activeAddress || "0x0").charCodeAt(
-      idx % (activeAddress?.length || 1)
-    );
+    const addr = dedicatedPairAddress || "0x0";
+    const charCode = addr.charCodeAt(idx % addr.length);
     return (charCode + idx) % 2 === 0;
   });
 
   return (
-    <div className="space-y-4 pb-24">
+    <div className="space-y-4 pb-28">
       <div className="grid grid-cols-3 gap-2 p-1 rounded-2xl bg-slate-900 border border-slate-800">
         <button
           onClick={() => setMode("receive")}
@@ -62,11 +93,28 @@ export default function ReceiveDepositView({
 
       {mode === "receive" && (
         <div className="p-6 rounded-3xl bg-vault-card border border-vault-border text-center space-y-4">
-          <div className="text-xs font-semibold text-indigo-400">
-            Receive on {CHAIN_METADATA[activeChainId].name}
+          {/* Asset Pair Selector for Dedicated Address */}
+          <div className="text-left">
+            <label className="text-[11px] text-slate-400 block mb-1.5">
+              Select Asset Pair Vault ({CHAIN_METADATA[activeChainId].name})
+            </label>
+            <div className="flex items-center gap-2">
+              <TokenLogo token={selectedToken} size={34} showChainBadge={true} />
+              <select
+                value={selectedIdx}
+                onChange={(e) => setSelectedIdx(Number(e.target.value))}
+                className="flex-1 px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-white"
+              >
+                {chainTokens.map((t, i) => (
+                  <option key={`${t.symbol}-${t.address}`} value={i}>
+                    {t.symbol} — Dedicated {t.symbol} Vault Address
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          <div className="w-48 h-48 mx-auto p-3 rounded-2xl bg-white grid grid-cols-11 gap-0.5">
+          <div className="w-48 h-48 mx-auto p-3 rounded-2xl bg-white grid grid-cols-11 gap-0.5 shadow-xl">
             {qrCells.map((filled, i) => (
               <div
                 key={i}
@@ -75,16 +123,30 @@ export default function ReceiveDepositView({
             ))}
           </div>
 
-          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs break-all">
-            {activeAddress}
+          <div className="space-y-1.5 text-left">
+            <div className="flex items-center justify-between text-[11px] text-indigo-300 font-semibold">
+              <span>{selectedToken?.symbol} Vault Address</span>
+              <span className="flex items-center gap-1 text-emerald-400">
+                <ShieldCheck className="w-3.5 h-3.5" /> Auto-Synced
+              </span>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs break-all text-white">
+              {dedicatedPairAddress}
+            </div>
           </div>
 
           <button
-            onClick={copyAddr}
-            className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 font-bold text-xs flex items-center justify-center gap-2"
+            onClick={copyPairAddr}
+            className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-emerald-600 hover:opacity-95 font-bold text-xs flex items-center justify-center gap-2 shadow-lg"
           >
-            {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-            {copied ? "Address Copied!" : "Copy Wallet Address"}
+            {copiedPair ? (
+              <Check className="w-4 h-4" />
+            ) : (
+              <Copy className="w-4 h-4" />
+            )}
+            {copiedPair
+              ? `Copied ${selectedToken?.symbol} Address!`
+              : `Copy ${selectedToken?.symbol} Address`}
           </button>
         </div>
       )}
@@ -96,20 +158,18 @@ export default function ReceiveDepositView({
             <span>Transak Fiat-to-Crypto On-Ramp</span>
           </div>
           <p className="text-xs text-slate-400">
-            Purchase ETH or USDC directly to{" "}
+            Purchase {selectedToken?.symbol || "ETH"} directly to{" "}
             <span className="font-mono text-white">
-              {activeAddress?.slice(0, 8)}...
-            </span>{" "}
-            via Apple Pay, Card, or Bank Transfer.
+              {dedicatedPairAddress?.slice(0, 10)}...
+            </span>
           </p>
-          <div className="rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 h-80 flex flex-col items-center justify-center p-4 text-center">
-            <p className="text-xs text-slate-300 mb-3">
-              Transak Widget Target URL Ready:
-            </p>
+          <div className="rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 h-64 flex flex-col items-center justify-center p-4 text-center">
             <a
               href={`https://global-stg.transak.com/?apiKey=${
                 process.env.NEXT_PUBLIC_TRANSAK_API_KEY || "staging_key"
-              }&walletAddress=${activeAddress}&cryptoCurrencyCode=ETH`}
+              }&walletAddress=${dedicatedPairAddress}&cryptoCurrencyCode=${
+                selectedToken?.symbol || "ETH"
+              }`}
               target="_blank"
               rel="noreferrer"
               className="px-4 py-2.5 rounded-xl bg-emerald-600 font-bold text-xs"
@@ -127,26 +187,11 @@ export default function ReceiveDepositView({
             <span>LI.FI Cross-Chain Bridge</span>
           </div>
           <p className="text-xs text-slate-400">
-            Bridge assets across Ethereum, Arbitrum, Optimism, Base, Polygon, and BSC via LI.FI routing.
+            Bridge assets directly into your {selectedToken?.symbol} Vault (
+            {dedicatedPairAddress?.slice(0, 8)}...).
           </p>
-          <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
-            <div className="flex justify-between">
-              <span className="text-slate-400">Aggregator Endpoint:</span>
-              <span className="font-mono text-indigo-300">https://li.quest/v1/quote</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Destination Chain:</span>
-              <span className="font-bold">{CHAIN_METADATA[activeChainId].name}</span>
-            </div>
-          </div>
         </div>
       )}
     </div>
   );
 }
-
-/**
- * STAGE 4 VERIFICATION CHECKLIST:
- * 1. Navigate to Swap: verify the 10-second countdown refreshes the 0x quote and displays Uniswap_V3 + Curve route split.
- * 2. Navigate to Send: enter a new 0x address and verify the amber "First-time recipient detected!" warning banner appears.
- */

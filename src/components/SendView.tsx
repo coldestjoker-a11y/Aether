@@ -38,10 +38,19 @@ import {
 import { TokenAsset } from "@/types/wallet";
 import BottomSheet from "@/components/ui/BottomSheet";
 import { TokenLogo } from "@/components/ui/TokenLogo";
+import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
+import {
+  encodeAetherTransferPayload,
+  broadcastIncomingTransferPacket,
+} from "@/lib/crypto/assetAddresses";
 import { triggerHaptic } from "@/lib/ui/haptics";
 import { useToast } from "@/components/ui/ToastProvider";
 
-export default function SendView() {
+export default function SendView({
+  preselectedToken,
+}: {
+  preselectedToken?: TokenAsset | null;
+}) {
   const {
     activeAddress,
     activeChainId,
@@ -58,6 +67,7 @@ export default function SendView() {
     getEffectiveTokenBalance,
     getRawOnChainTokenBalance,
     recordSendExecution,
+    getTokenVaultAddress,
     balanceSyncVersion,
   } = useWalletStore();
   const { pushToast } = useToast();
@@ -130,6 +140,19 @@ export default function SendView() {
     [allChainTokens, activeChainId]
   );
 
+  // Sync with preselectedToken if provided
+  useEffect(() => {
+    if (!preselectedToken) return;
+    const foundIdx = allChainTokens.findIndex(
+      (t) =>
+        t.symbol.toUpperCase() === preselectedToken.symbol.toUpperCase() &&
+        t.address.toLowerCase() === preselectedToken.address.toLowerCase()
+    );
+    if (foundIdx >= 0) {
+      setSelectedTokenIndex(foundIdx);
+    }
+  }, [preselectedToken, allChainTokens]);
+
   // CRITICAL FIX: Read effective balance from `useWalletStore` so swapped USDC and all other pairs show their exact live balance!
   const tokenBalance = useMemo(
     () => getEffectiveTokenBalance(activeChainId, selectedToken),
@@ -183,7 +206,12 @@ export default function SendView() {
       return {
         to: resolvedAddress,
         value: 0n,
-        data: "0x" as const,
+        data: encodeAetherTransferPayload({
+          symbol: selectedToken.symbol,
+          tokenAddress: selectedToken.address,
+          amountWei: parsedUnits,
+          recipient: resolvedAddress,
+        }),
         parsedUnits,
         usedSyntheticSettlement: true,
       };
@@ -355,6 +383,18 @@ export default function SendView() {
         token: selectedToken,
         amountWei: payload.parsedUnits,
         usedSyntheticSettlement: payload.usedSyntheticSettlement,
+      });
+
+      // Broadcast transfer packet so any recipient wallet or pair address receives the incoming balance immediately
+      broadcastIncomingTransferPacket({
+        txHash: tx.hash,
+        chainId: activeChainId,
+        from: getTokenVaultAddress(selectedToken),
+        to: resolvedAddress,
+        symbol: selectedToken.symbol,
+        tokenAddress: selectedToken.address,
+        amountWei: payload.parsedUnits.toString(),
+        timestamp: Date.now(),
       });
 
       markRecipientKnown(resolvedAddress);
@@ -684,12 +724,21 @@ export default function SendView() {
           disabled={!resolvedAddress || isSending}
           className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-40 shadow-lg shadow-indigo-600/20"
         >
-          <Send className="w-4 h-4" />
-          {isSending
-            ? "Signing & Broadcasting..."
-            : simulationOk
-            ? `Send ${amount} ${selectedToken.symbol}`
-            : "Send Anyway (Override Simulation Warning)"}
+          {isSending ? (
+            <AetherWaveLoader
+              size="sm"
+              label={`Aether Dispatching ${selectedToken.symbol}...`}
+            />
+          ) : (
+            <>
+              <Send className="w-4 h-4" />
+              <span>
+                {simulationOk
+                  ? `Send ${amount} ${selectedToken.symbol}`
+                  : "Send Anyway (Override Simulation Warning)"}
+              </span>
+            </>
+          )}
         </button>
       </form>
 

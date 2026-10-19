@@ -15,7 +15,6 @@ import {
   Check,
   ChevronDown,
   ShieldCheck,
-  Sparkles,
   Search,
 } from "lucide-react";
 import { formatUnits } from "viem";
@@ -25,17 +24,21 @@ import {
   getResilientPublicClient,
 } from "@/lib/chains/config";
 import { priceStream } from "@/lib/prices/websocket";
-import { SupportedChainId, TokenBalance } from "@/types/wallet";
+import { fetchUniversalTokenList } from "@/lib/tokens/registry";
+import { SupportedChainId, TokenAsset, TokenBalance } from "@/types/wallet";
 import AnimatedNumber from "@/components/ui/AnimatedNumber";
 import InteractiveChart, { ChartPoint } from "@/components/ui/InteractiveChart";
 import BottomSheet from "@/components/ui/BottomSheet";
+import { TokenLogo } from "@/components/ui/TokenLogo";
+import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
 import { triggerHaptic, formatFriendlyAddress } from "@/lib/ui/haptics";
 import { useToast } from "@/components/ui/ToastProvider";
-import { fetchUniversalTokenList } from "@/lib/tokens/registry";
-import { TokenLogo } from "@/components/ui/TokenLogo";
 
 interface Props {
-  onNavigateTab: (tab: "swap" | "send" | "receive" | "deposit") => void;
+  onNavigateTab: (
+    tab: "swap" | "send" | "receive" | "deposit",
+    preselectedToken?: TokenAsset
+  ) => void;
 }
 
 export default function DashboardView({ onNavigateTab }: Props) {
@@ -49,15 +52,10 @@ export default function DashboardView({ onNavigateTab }: Props) {
     currency,
     syncChainBalances,
     getEffectiveTokenBalance,
+    getTokenVaultAddress,
     balanceSyncVersion,
   } = useWalletStore();
   const { pushToast } = useToast();
-
-  useEffect(() => {
-    fetchUniversalTokenList(activeChainId).then((tokens) => {
-      tokens.forEach((t) => addCustomToken(t));
-    });
-  }, [activeChainId]);
 
   const [prices, setPrices] = useState<
     Record<string, { price: number; change24h: number }>
@@ -65,7 +63,10 @@ export default function DashboardView({ onNavigateTab }: Props) {
   const [isLoadingBalances, setIsLoadingBalances] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
-  const [chartTimeframe, setChartTimeframe] = useState<"24H" | "7D" | "1M">("24H");
+  const [copiedAssetAddr, setCopiedAssetAddr] = useState<boolean>(false);
+  const [chartTimeframe, setChartTimeframe] = useState<"24H" | "7D" | "1M">(
+    "24H"
+  );
   const [scrubbedPoint, setScrubbedPoint] = useState<ChartPoint | null>(null);
   const [isNetworkSheetOpen, setIsNetworkSheetOpen] = useState<boolean>(false);
   const [selectedAssetDetail, setSelectedAssetDetail] =
@@ -73,6 +74,12 @@ export default function DashboardView({ onNavigateTab }: Props) {
   const [searchFilter, setSearchFilter] = useState<string>("");
 
   const parentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    fetchUniversalTokenList(activeChainId).then((tokens) => {
+      tokens.forEach((t) => addCustomToken(t));
+    });
+  }, [activeChainId]);
 
   const chainTokens = useMemo(
     () => customTokens.filter((t) => t.chainId === activeChainId),
@@ -84,6 +91,17 @@ export default function DashboardView({ onNavigateTab }: Props) {
       setPrices(livePrices);
     });
   }, []);
+
+  // Listen for instant cross-tab / pair-vault incoming deposits
+  useEffect(() => {
+    if (typeof window === "undefined" || !("BroadcastChannel" in window))
+      return;
+    const bc = new BroadcastChannel("aethervault_ledger_sync");
+    bc.onmessage = () => {
+      syncChainBalances(activeChainId);
+    };
+    return () => bc.close();
+  }, [activeChainId]);
 
   const fetchBalances = async (manual = false) => {
     if (!activeAddress) return;
@@ -97,7 +115,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
         pushToast({
           type: "info",
           title: "Portfolio Synced",
-          description: `Updated balances on ${CHAIN_METADATA[activeChainId].name}`,
+          description: `All pair addresses synced on ${CHAIN_METADATA[activeChainId].name}`,
         });
       }
     } finally {
@@ -117,7 +135,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
       onBlockNumber: () => {
         fetchBalances(false);
       },
-      pollingInterval: 12_000,
+      pollingInterval: 10_000,
     });
     return () => unwatch();
   }, [activeAddress, activeChainId, chainTokens.length]);
@@ -186,24 +204,27 @@ export default function DashboardView({ onNavigateTab }: Props) {
     estimateSize: () => 74,
   });
 
-  const copyAddress = () => {
+  const copyMasterAddress = () => {
     if (!activeAddress) return;
     navigator.clipboard.writeText(activeAddress);
     setCopied(true);
     triggerHaptic("success");
     pushToast({
       type: "success",
-      title: "Address Copied",
+      title: "Master Address Copied",
       description: `${activeAddress} copied to clipboard.`,
     });
     setTimeout(() => setCopied(false), 1800);
   };
 
   const currentChainMeta = CHAIN_METADATA[activeChainId];
+  const selectedTokenDedicatedAddress = selectedAssetDetail
+    ? getTokenVaultAddress(selectedAssetDetail)
+    : activeAddress;
 
   return (
     <div className="space-y-5 pb-28">
-      {/* Top Interactive Header: Network Selector Pill + Address Pill */}
+      {/* Top Interactive Header */}
       <div className="flex items-center justify-between gap-2">
         <motion.button
           whileTap={{ scale: 0.96 }}
@@ -227,9 +248,11 @@ export default function DashboardView({ onNavigateTab }: Props) {
         </motion.button>
 
         <div className="flex items-center gap-2">
+          {isRefreshing && <AetherWaveLoader size="sm" />}
+
           <motion.button
             whileTap={{ scale: 0.96 }}
-            onClick={copyAddress}
+            onClick={copyMasterAddress}
             className="px-3.5 py-2 rounded-2xl bg-slate-900/90 border border-white/10 text-xs font-mono flex items-center gap-1.5 hover:border-indigo-500/50 transition"
           >
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -300,7 +323,6 @@ export default function DashboardView({ onNavigateTab }: Props) {
           </div>
         </div>
 
-        {/* Interactive Scrubber Chart */}
         <InteractiveChart
           baseValue={totalPortfolioValue}
           change24h={weighted24hChange}
@@ -310,7 +332,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
           onScrubValue={setScrubbedPoint}
         />
 
-        {/* Tactile Quick Action Dock */}
+        {/* Quick Action Dock */}
         <div className="grid grid-cols-4 gap-2.5 mt-6">
           {[
             {
@@ -402,13 +424,12 @@ export default function DashboardView({ onNavigateTab }: Props) {
           className="max-h-[340px] overflow-y-auto rounded-3xl bg-vault-card border border-vault-border p-2 backdrop-blur-xl"
         >
           {isLoadingBalances ? (
-            <div className="space-y-2 p-2">
-              {[0, 1, 2].map((skeleton) => (
-                <div
-                  key={skeleton}
-                  className="h-16 rounded-2xl bg-slate-900/80 animate-pulse border border-white/5"
-                />
-              ))}
+            <div className="py-10 flex flex-col items-center justify-center gap-3">
+              <AetherWaveLoader
+                size="md"
+                label="Aether Syncing Vaults"
+                sublabel="Checking per-asset addresses..."
+              />
             </div>
           ) : (
             <div
@@ -420,9 +441,10 @@ export default function DashboardView({ onNavigateTab }: Props) {
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                 const token = tokenBalances[virtualRow.index];
+                const pairAddress = getTokenVaultAddress(token);
                 return (
                   <div
-                    key={`${token.chainId}-${token.symbol}`}
+                    key={`${token.chainId}-${token.symbol}-${token.address}`}
                     onClick={() => {
                       triggerHaptic("light");
                       setSelectedAssetDetail(token);
@@ -438,12 +460,16 @@ export default function DashboardView({ onNavigateTab }: Props) {
                     className="px-3.5 py-2.5 flex items-center justify-between rounded-2xl hover:bg-slate-800/50 active:scale-[0.99] transition cursor-pointer"
                   >
                     <div className="flex items-center gap-3">
-                      <TokenLogo token={token} size={44} />
+                      <TokenLogo
+                        token={token}
+                        size={42}
+                        showChainBadge={true}
+                      />
                       <div>
                         <div className="text-sm font-bold text-white flex items-center gap-1.5">
                           <span>{token.symbol}</span>
-                          <span className="text-[11px] font-normal text-slate-400">
-                            {token.name}
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900 text-slate-400 border border-white/5">
+                            {formatFriendlyAddress(pairAddress, 3)}
                           </span>
                         </div>
                         <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
@@ -486,7 +512,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
         </div>
       </div>
 
-      {/* Network Switcher Bottom Sheet */}
+      {/* Network Switcher Sheet */}
       <BottomSheet
         isOpen={isNetworkSheetOpen}
         onClose={() => setIsNetworkSheetOpen(false)}
@@ -504,13 +530,6 @@ export default function DashboardView({ onNavigateTab }: Props) {
                   triggerHaptic("medium");
                   setActiveChainId(id);
                   setIsNetworkSheetOpen(false);
-                  pushToast({
-                    type: "info",
-                    title: `Switched to ${meta.name}`,
-                    description: meta.isTestnet
-                      ? "Testnet mode active — safe for zero-cost testing."
-                      : "Mainnet RPC active with Alchemy/Infura fallback.",
-                  });
                 }}
                 className={`w-full p-3.5 rounded-2xl border flex items-center justify-between transition ${
                   isSelected
@@ -541,7 +560,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
         </div>
       </BottomSheet>
 
-      {/* Token Quick Action Sheet */}
+      {/* Clicking Any Token Pair Opens ONLY Send & Receive + Dedicated Pair Address */}
       <BottomSheet
         isOpen={!!selectedAssetDetail}
         onClose={() => setSelectedAssetDetail(null)}
@@ -550,15 +569,19 @@ export default function DashboardView({ onNavigateTab }: Props) {
             ? `${selectedAssetDetail.name} (${selectedAssetDetail.symbol})`
             : "Asset"
         }
-        subtitle={`On ${currentChainMeta.name}`}
+        subtitle={`Dedicated ${selectedAssetDetail?.symbol} Vault on ${currentChainMeta.name}`}
       >
         {selectedAssetDetail && (
           <div className="space-y-4">
             <div className="p-4 rounded-2xl bg-slate-950 border border-white/10 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <TokenLogo token={selectedAssetDetail} size={44} />
+                <TokenLogo
+                  token={selectedAssetDetail}
+                  size={44}
+                  showChainBadge={true}
+                />
                 <div>
-                  <div className="text-xs text-slate-400">Your Balance</div>
+                  <div className="text-xs text-slate-400">Available Balance</div>
                   <div className="text-xl font-bold font-mono mt-0.5">
                     {selectedAssetDetail.formattedBalance}{" "}
                     {selectedAssetDetail.symbol}
@@ -566,35 +589,76 @@ export default function DashboardView({ onNavigateTab }: Props) {
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-xs text-slate-400">Market Price</div>
-                <div className="text-lg font-bold text-indigo-300 mt-0.5">
+                <div className="text-xs text-slate-400">USD Value</div>
+                <div className="text-lg font-bold text-emerald-400 mt-0.5">
                   {currencySymbol}
-                  {selectedAssetDetail.usdPrice.toFixed(2)}
+                  {selectedAssetDetail.usdValue.toFixed(2)}
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5">
-              <button
+            {/* Dedicated Per-Pair Vault Address Card */}
+            <div className="p-3.5 rounded-2xl bg-slate-950/90 border border-indigo-500/30 space-y-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-indigo-300 font-bold">
+                  Dedicated {selectedAssetDetail.symbol} Receive Address
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!selectedTokenDedicatedAddress) return;
+                    navigator.clipboard.writeText(selectedTokenDedicatedAddress);
+                    setCopiedAssetAddr(true);
+                    triggerHaptic("success");
+                    setTimeout(() => setCopiedAssetAddr(false), 1800);
+                  }}
+                  className="text-emerald-400 font-semibold flex items-center gap-1"
+                >
+                  {copiedAssetAddr ? (
+                    <>
+                      <Check className="w-3 h-3" /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" /> Copy Address
+                    </>
+                  )}
+                </button>
+              </div>
+              <div className="font-mono text-[11px] text-slate-300 break-all bg-slate-900 p-2.5 rounded-xl border border-white/5">
+                {selectedTokenDedicatedAddress}
+              </div>
+            </div>
+
+            {/* STRICTLY SEND & RECEIVE BUTTONS ONLY */}
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                data-testid="asset-sheet-btn-send"
                 onClick={() => {
+                  const tok = selectedAssetDetail;
                   setSelectedAssetDetail(null);
-                  onNavigateTab("send");
+                  onNavigateTab("send", tok);
                 }}
-                className="py-3 rounded-xl bg-slate-800 hover:bg-slate-700 font-bold text-xs flex items-center justify-center gap-1.5"
+                className="py-3.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 font-bold text-xs text-white flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25"
               >
-                <ArrowUpRight className="w-4 h-4 text-indigo-400" />
+                <ArrowUpRight className="w-4 h-4" />
                 Send {selectedAssetDetail.symbol}
-              </button>
-              <button
+              </motion.button>
+
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                data-testid="asset-sheet-btn-receive"
                 onClick={() => {
+                  const tok = selectedAssetDetail;
                   setSelectedAssetDetail(null);
-                  onNavigateTab("swap");
+                  onNavigateTab("receive", tok);
                 }}
-                className="py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 font-bold text-xs flex items-center justify-center gap-1.5"
+                className="py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 font-bold text-xs text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25"
               >
-                <Sparkles className="w-4 h-4" />
-                Swap {selectedAssetDetail.symbol}
-              </button>
+                <ArrowDownLeft className="w-4 h-4" />
+                Receive {selectedAssetDetail.symbol}
+              </motion.button>
             </div>
           </div>
         )}

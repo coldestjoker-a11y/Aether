@@ -19,6 +19,7 @@ import ReceiveDepositView from "@/components/ReceiveDepositView";
 import ActivityView from "@/components/ActivityView";
 import SettingsView from "@/components/SettingsView";
 import { triggerHaptic } from "@/lib/ui/haptics";
+import { TokenAsset } from "@/types/wallet";
 
 type ActiveTab =
   | "home"
@@ -32,6 +33,8 @@ type ActiveTab =
 export default function WalletAppPage() {
   const { activeAddress, isUnlocked, theme, transactions } = useWalletStore();
   const [tab, setTab] = useState<ActiveTab>("home");
+  const [selectedTokenForAction, setSelectedTokenForAction] =
+    useState<TokenAsset | null>(null);
 
   if (!activeAddress || !isUnlocked) {
     return <OnboardingView />;
@@ -60,6 +63,7 @@ export default function WalletAppPage() {
             <button
               onClick={() => {
                 triggerHaptic("light");
+                setSelectedTokenForAction(null);
                 setTab("home");
               }}
               className="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-white/10 text-xs font-bold text-slate-300 hover:text-white flex items-center gap-1.5"
@@ -84,16 +88,29 @@ export default function WalletAppPage() {
             >
               {tab === "home" && (
                 <DashboardView
-                  onNavigateTab={(sub) => {
+                  onNavigateTab={(sub, tok) => {
                     triggerHaptic("light");
+                    setSelectedTokenForAction(tok || null);
                     setTab(sub);
                   }}
                 />
               )}
               {tab === "swap" && <SwapView />}
-              {tab === "send" && <SendView />}
-              {tab === "receive" && <ReceiveDepositView initialMode="receive" />}
-              {tab === "deposit" && <ReceiveDepositView initialMode="deposit" />}
+              {tab === "send" && (
+                <SendView preselectedToken={selectedTokenForAction} />
+              )}
+              {tab === "receive" && (
+                <ReceiveDepositView
+                  initialMode="receive"
+                  preselectedToken={selectedTokenForAction}
+                />
+              )}
+              {tab === "deposit" && (
+                <ReceiveDepositView
+                  initialMode="deposit"
+                  preselectedToken={selectedTokenForAction}
+                />
+              )}
               {tab === "activity" && <ActivityView />}
               {tab === "settings" && <SettingsView />}
             </motion.div>
@@ -123,6 +140,7 @@ export default function WalletAppPage() {
                 data-testid={`nav-${item.id}`}
                 onClick={() => {
                   triggerHaptic("light");
+                  setSelectedTokenForAction(null);
                   setTab(item.id as ActiveTab);
                 }}
                 className={`relative flex flex-col items-center gap-1 px-4 py-1.5 rounded-2xl transition ${

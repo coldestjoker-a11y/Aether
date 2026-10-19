@@ -31,6 +31,7 @@ import { fetchUniversalTokenList } from "@/lib/tokens/registry";
 import { SecurityAuditResult, TokenAsset } from "@/types/wallet";
 import BottomSheet from "@/components/ui/BottomSheet";
 import { TokenLogo, TokenPairLogo } from "@/components/ui/TokenLogo";
+import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
 import { triggerHaptic } from "@/lib/ui/haptics";
 import { useToast } from "@/components/ui/ToastProvider";
 
@@ -338,13 +339,11 @@ export default function SwapView() {
         </div>
 
         <div className="px-3 py-1.5 rounded-full bg-slate-900 border border-white/10 flex items-center gap-2 text-xs text-slate-300">
-          <RefreshCw
-            className={`w-3.5 h-3.5 ${
-              isLoadingQuote
-                ? "animate-spin text-indigo-400"
-                : "text-emerald-400"
-            }`}
-          />
+          {isLoadingQuote ? (
+            <AetherWaveLoader size="sm" />
+          ) : (
+            <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
+          )}
           <span className="tabular-nums">{countdown}s</span>
         </div>
       </div>
@@ -597,7 +596,14 @@ export default function SwapView() {
           }}
           className="w-full py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 font-bold text-sm disabled:opacity-40 shadow-lg shadow-indigo-600/25 transition"
         >
-          {isSwapping ? "Swapping & Updating Balances..." : "Review Swap"}
+          {isSwapping ? (
+            <AetherWaveLoader
+              size="sm"
+              label={`Aether Swapping ${sellToken?.symbol} → ${buyToken?.symbol}...`}
+            />
+          ) : (
+            "Review Swap"
+          )}
         </motion.button>
       </div>
 
@@ -724,8 +730,14 @@ export default function SwapView() {
               onClick={handleExecuteSwap}
               className="flex-1 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-600/25 disabled:opacity-50"
             >
-              <Sparkles className="w-4 h-4" />
-              {isSwapping ? "Signing..." : "Confirm & Swap"}
+              {isSwapping ? (
+                <AetherWaveLoader size="sm" label="Aether Broadcasting..." />
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Confirm & Swap</span>
+                </>
+              )}
             </button>
           </div>
         </div>

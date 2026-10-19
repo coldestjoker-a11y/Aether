@@ -8,8 +8,16 @@ import {
   TokenAsset,
   WalletTransaction,
 } from "@/types/wallet";
-import { DEFAULT_TOKENS, getResilientPublicClient } from "@/lib/chains/config";
+import {
+  DEFAULT_TOKENS,
+  getResilientPublicClient,
+  SUPPORTED_CHAINS,
+} from "@/lib/chains/config";
 import { EXPANDED_CATALOG } from "@/lib/tokens/registry";
+import {
+  deriveAssetVaultAccount,
+  readIncomingTransferPackets,
+} from "@/lib/crypto/assetAddresses";
 
 const ERC20_BALANCE_ABI = parseAbi([
   "function balanceOf(address owner) view returns (uint256)",
@@ -46,6 +54,7 @@ interface WalletState {
   addressBook: AddressBookEntry[];
   knownRecipients: Address[];
   transactions: WalletTransaction[];
+  processedIncomingHashes: string[];
   currency: "USD" | "EUR" | "GBP";
   theme: "dark" | "light";
 
@@ -75,7 +84,8 @@ interface WalletState {
     replacementHash?: Hex
   ) => void;
 
-  // Global Balance & Ledger Actions (Shared across Dashboard, Swap, and Send)
+  // Per-Asset Address & Global Balance Engine
+  getTokenVaultAddress: (token: TokenAsset) => Address;
   syncChainBalances: (chainId?: SupportedChainId) => Promise<void>;
   recordSwapExecution: (params: {
     txHash: Hex;
@@ -136,6 +146,7 @@ export const useWalletStore = create<WalletState>()(
       ],
       knownRecipients: [],
       transactions: [],
+      processedIncomingHashes: [],
       currency: "USD",
       theme: "dark",
 
@@ -233,6 +244,26 @@ export const useWalletStore = create<WalletState>()(
           ),
         })),
 
+      /**
+       * Returns the dedicated receiving/sending Vault Address for any specific token pair!
+       */
+      getTokenVaultAddress: (token) => {
+        const state = get();
+        if (!state.activeAddress) {
+          return "0x0000000000000000000000000000000000000000" as Address;
+        }
+        return deriveAssetVaultAccount({
+          masterAddress: state.activeAddress,
+          sessionPrivateKey: state.sessionPrivateKey,
+          token,
+        }).vaultAddress;
+      },
+
+      /**
+       * Queries BOTH the user's Master Wallet Address AND each token's dedicated Sub-Vault Address
+       * so any deposit sent to either address lands cleanly in the wallet!
+       * Also processes incoming transfer packets from `BroadcastChannel` / `localStorage`.
+       */
       syncChainBalances: async (targetChainId) => {
         const state = get();
         const chainId = targetChainId ?? state.activeChainId;
@@ -247,32 +278,127 @@ export const useWalletStore = create<WalletState>()(
           (t) => t.chainId === chainId
         );
 
+        // Build map of all valid addresses belonging to this user (Master + Per-Token Vaults)
+        const ownedAddresses = new Set<string>([owner.toLowerCase()]);
+        const tokenVaultMap = new Map<string, Address>();
+
+        chainTokens.forEach((token) => {
+          const { vaultAddress } = deriveAssetVaultAccount({
+            masterAddress: owner,
+            sessionPrivateKey: state.sessionPrivateKey,
+            token,
+          });
+          ownedAddresses.add(vaultAddress.toLowerCase());
+          tokenVaultMap.set(
+            getTokenBalanceKey(chainId, token.address),
+            vaultAddress
+          );
+        });
+
+        // 1. Reconcile any incoming transfer packets sent to the user's Master OR Pair Vault Address
+        const inboxPackets = readIncomingTransferPackets();
+        const newProcessed = [...state.processedIncomingHashes];
+        const nextDeltas = { ...state.swapLedgerDeltas };
+        const newIncomingTxs: WalletTransaction[] = [];
+
+        const explorerBase =
+          SUPPORTED_CHAINS[chainId].blockExplorers?.default.url ||
+          "https://sepolia.etherscan.io";
+
+        inboxPackets.forEach((pkt) => {
+          if (pkt.chainId !== chainId) return;
+          const lowerHash = pkt.txHash.toLowerCase();
+          if (newProcessed.includes(lowerHash)) return;
+
+          const isForMe = ownedAddresses.has(pkt.to.toLowerCase());
+          const isFromMe = ownedAddresses.has(pkt.from.toLowerCase());
+
+          // If received from an external wallet OR sent specifically to one of our pair sub-vaults
+          if (isForMe && (!isFromMe || pkt.to.toLowerCase() !== pkt.from.toLowerCase())) {
+            const matchedToken = chainTokens.find(
+              (t) =>
+                t.symbol.toUpperCase() === pkt.symbol.toUpperCase() ||
+                t.address.toLowerCase() === pkt.tokenAddress.toLowerCase()
+            );
+            if (matchedToken) {
+              const key = getTokenBalanceKey(chainId, matchedToken.address);
+              const prevDelta = BigInt(nextDeltas[key] || "0");
+              nextDeltas[key] = (prevDelta + BigInt(pkt.amountWei)).toString();
+              newProcessed.push(lowerHash);
+
+              if (
+                !state.transactions.some(
+                  (tx) => tx.hash.toLowerCase() === lowerHash
+                )
+              ) {
+                newIncomingTxs.push({
+                  hash: pkt.txHash,
+                  chainId,
+                  from: pkt.from,
+                  to: pkt.to,
+                  value: pkt.amountWei,
+                  data: "0x",
+                  nonce: 0,
+                  maxFeePerGas: "0",
+                  maxPriorityFeePerGas: "0",
+                  gasLimit: "65000",
+                  type: "send",
+                  summary: `[INCOMING] Received ${pkt.symbol} Deposit`,
+                  status: "confirmed",
+                  timestamp: pkt.timestamp,
+                  explorerUrl: `${explorerBase}/tx/${pkt.txHash}`,
+                });
+              }
+            }
+          }
+        });
+
+        // 2. Query live on-chain balances across BOTH Master Address + Pair Vault Address
         const updated: Record<string, string> = {};
 
         await Promise.all(
           chainTokens.map(async (token) => {
             const key = getTokenBalanceKey(chainId, token.address);
+            const pairVault = tokenVaultMap.get(key) || owner;
             try {
               if (token.address === "NATIVE") {
-                const bal = await client.getBalance({ address: owner });
-                updated[key] = bal.toString();
+                const [balMaster, balVault] = await Promise.all([
+                  client.getBalance({ address: owner }),
+                  pairVault.toLowerCase() !== owner.toLowerCase()
+                    ? client.getBalance({ address: pairVault })
+                    : Promise.resolve(0n),
+                ]);
+                updated[key] = (balMaster + balVault).toString();
               } else {
-                const bal = await client.readContract({
-                  address: token.address,
-                  abi: ERC20_BALANCE_ABI,
-                  functionName: "balanceOf",
-                  args: [owner],
-                });
-                updated[key] = bal.toString();
+                const [balMaster, balVault] = await Promise.all([
+                  client.readContract({
+                    address: token.address,
+                    abi: ERC20_BALANCE_ABI,
+                    functionName: "balanceOf",
+                    args: [owner],
+                  }),
+                  pairVault.toLowerCase() !== owner.toLowerCase()
+                    ? client.readContract({
+                        address: token.address,
+                        abi: ERC20_BALANCE_ABI,
+                        functionName: "balanceOf",
+                        args: [pairVault],
+                      })
+                    : Promise.resolve(0n),
+                ]);
+                updated[key] = (balMaster + balVault).toString();
               }
             } catch {
-              // Keep last known on-chain balance on transient RPC timeout
+              // Keep cached balance if RPC times out
             }
           })
         );
 
         set((prev) => ({
           onChainBalances: { ...prev.onChainBalances, ...updated },
+          swapLedgerDeltas: nextDeltas,
+          processedIncomingHashes: newProcessed,
+          transactions: [...newIncomingTxs, ...prev.transactions],
           balanceSyncVersion: prev.balanceSyncVersion + 1,
         }));
       },
@@ -332,10 +458,6 @@ export const useWalletStore = create<WalletState>()(
         });
       },
 
-      /**
-       * Deducts sent tokens immediately from the effective balance so sending
-       * swapped USDC (or any other pair) updates both SendView and DashboardView accurately.
-       */
       recordSendExecution: ({
         chainId,
         token,
@@ -355,7 +477,6 @@ export const useWalletStore = create<WalletState>()(
             };
           }
 
-          // For real on-chain transfers, optimistically reduce onChainBalances until next block sync
           const prevRaw = BigInt(state.onChainBalances[key] || "0");
           const nextRaw = prevRaw > amountWei ? prevRaw - amountWei : 0n;
           return {
@@ -420,6 +541,7 @@ export const useWalletStore = create<WalletState>()(
           sessionPrivateKey: null,
           transactions: [],
           knownRecipients: [],
+          processedIncomingHashes: [],
           onChainBalances: {},
           swapLedgerDeltas: {},
           pendingSwapLocks: {},
@@ -427,7 +549,7 @@ export const useWalletStore = create<WalletState>()(
         }),
     }),
     {
-      name: "aethervault-storage-v2",
+      name: "aethervault-storage-v3",
       partialize: (state) => ({
         keystore: state.keystore,
         activeAddress: state.activeAddress,
@@ -440,6 +562,7 @@ export const useWalletStore = create<WalletState>()(
         addressBook: state.addressBook,
         knownRecipients: state.knownRecipients,
         transactions: state.transactions,
+        processedIncomingHashes: state.processedIncomingHashes,
         onChainBalances: state.onChainBalances,
         swapLedgerDeltas: state.swapLedgerDeltas,
         currency: state.currency,
