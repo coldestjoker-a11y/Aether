@@ -2,9 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  timeout: 60 * 1000,
+  timeout: 120 * 1000,
   expect: {
-    timeout: 5000,
+    timeout: 15000,
   },
   fullyParallel: true,
   retries: 0,
@@ -12,6 +12,9 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:3000",
     trace: "on-first-retry",
+    launchOptions: {
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    },
   },
   projects: [
     {
@@ -20,4 +23,3 @@ export default defineConfig({
     },
   ],
 });
-

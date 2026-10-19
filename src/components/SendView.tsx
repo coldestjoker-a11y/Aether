@@ -36,7 +36,8 @@ import {
   broadcastIncomingTransferPacket,
 } from "@/lib/crypto/assetAddresses";
 import { resolveOnChainERC20Token } from "@/lib/tokens/registry";
-import { TokenAsset } from "@/types/wallet";
+import { executeSmartAssetTransfer } from "@/lib/tx/subvaultRelayer";
+import { TokenAsset, WalletTransaction } from "@/types/wallet";
 import BottomSheet from "@/components/ui/BottomSheet";
 import { TokenLogo } from "@/components/ui/TokenLogo";
 import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
@@ -353,21 +354,35 @@ export default function SendView({
     try {
       const senderPairAddress = getTokenVaultAddress(selectedToken);
 
-      const tx = await signAndBroadcastTransaction({
-        chainId: activeChainId,
-        privateKeyHex: sessionPrivateKey,
-        to: payload.to,
-        value: payload.value,
-        data: payload.data,
-        gasLimit:
-          gasEstimates?.estimatedGasLimit ??
-          (payload.data === "0x" ? 21_000n : 85_000n),
-        maxFeePerGas: activeGasParams.maxFeePerGas,
-        maxPriorityFeePerGas: activeGasParams.maxPriorityFeePerGas,
-        type: "send",
-        summary: `Send ${amount} ${selectedToken.symbol} to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`,
-        customRpc: customRpcs[activeChainId],
-      });
+      let tx: WalletTransaction;
+      if (!payload.usedSyntheticSettlement) {
+        tx = await executeSmartAssetTransfer({
+          chainId: activeChainId,
+          masterPrivateKey: sessionPrivateKey,
+          token: selectedToken,
+          recipient: resolvedAddress,
+          amountWei: payload.parsedUnits,
+          maxFeePerGas: activeGasParams.maxFeePerGas,
+          maxPriorityFeePerGas: activeGasParams.maxPriorityFeePerGas,
+          customRpc: customRpcs[activeChainId],
+        });
+      } else {
+        tx = await signAndBroadcastTransaction({
+          chainId: activeChainId,
+          privateKeyHex: sessionPrivateKey,
+          to: payload.to,
+          value: payload.value,
+          data: payload.data,
+          gasLimit:
+            gasEstimates?.estimatedGasLimit ??
+            (payload.data === "0x" ? 21_000n : 85_000n),
+          maxFeePerGas: activeGasParams.maxFeePerGas,
+          maxPriorityFeePerGas: activeGasParams.maxPriorityFeePerGas,
+          type: "send",
+          summary: `Send ${amount} ${selectedToken.symbol} to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`,
+          customRpc: customRpcs[activeChainId],
+        });
+      }
 
       // 1. Deduct from sender's balance
       recordSendExecution({

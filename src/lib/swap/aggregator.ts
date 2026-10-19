@@ -2,6 +2,7 @@ import { Address, encodeFunctionData, Hex, parseAbi, parseUnits } from "viem";
 import { CHAIN_METADATA } from "@/lib/chains/config";
 import { priceStream } from "@/lib/prices/websocket";
 import { SupportedChainId, SwapQuoteResponse, TokenAsset } from "@/types/wallet";
+import { trySepoliaUniswapV3Quote } from "@/lib/swap/uniswapV3Sepolia";
 
 const WETH_ABI = parseAbi([
   "function deposit() payable",
@@ -73,6 +74,24 @@ export async function fetchSwapQuote(params: {
       sources: [{ name: "WETH9_Canonical_Vault", proportion: "1" }],
       isSimulatedRouterCalldata: false,
     };
+  }
+
+  // CASE B1: Official Sepolia Uniswap V3 Pool Liquidity Quote (QuoterV2 + SwapRouter02)
+  if (params.chainId === 11155111 && params.takerAddress) {
+    try {
+      const uniV3Quote = await trySepoliaUniswapV3Quote({
+        sellToken: params.sellToken,
+        buyToken: params.buyToken,
+        sellUnits,
+        slippagePercent: params.slippagePercent,
+        recipient: params.takerAddress,
+      });
+      if (uniV3Quote) {
+        return uniV3Quote;
+      }
+    } catch {
+      // Fall through to synthetic settlement
+    }
   }
 
   // CASE B: Live LI.FI DEX Aggregator on Mainnet / L2s

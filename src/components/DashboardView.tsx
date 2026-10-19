@@ -16,6 +16,7 @@ import {
   ChevronDown,
   ShieldCheck,
   Search,
+  QrCode,
 } from "lucide-react";
 import { formatUnits } from "viem";
 import { useWalletStore } from "@/store/useWalletStore";
@@ -31,6 +32,7 @@ import InteractiveChart, { ChartPoint } from "@/components/ui/InteractiveChart";
 import BottomSheet from "@/components/ui/BottomSheet";
 import { TokenLogo } from "@/components/ui/TokenLogo";
 import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
+import DappConnectModal from "@/components/DappConnectModal";
 import { triggerHaptic, formatFriendlyAddress } from "@/lib/ui/haptics";
 import { useToast } from "@/components/ui/ToastProvider";
 
@@ -72,6 +74,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
   const [selectedAssetDetail, setSelectedAssetDetail] =
     useState<TokenBalance | null>(null);
   const [searchFilter, setSearchFilter] = useState<string>("");
+  const [isDappModalOpen, setIsDappModalOpen] = useState<boolean>(false);
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -262,6 +265,19 @@ export default function DashboardView({ onNavigateTab }: Props) {
             ) : (
               <Copy className="w-3.5 h-3.5 text-slate-400" />
             )}
+          </motion.button>
+
+          <motion.button
+            whileTap={{ scale: 0.92 }}
+            aria-label="Connect dApp"
+            title="Scan dApp QR / WalletConnect"
+            onClick={() => {
+              triggerHaptic("light");
+              setIsDappModalOpen(true);
+            }}
+            className="p-2.5 rounded-2xl bg-slate-900/90 border border-white/10 hover:border-indigo-500/50 hover:text-indigo-400 text-slate-300 transition"
+          >
+            <QrCode className="w-4 h-4" />
           </motion.button>
 
           <motion.button
@@ -653,6 +669,12 @@ export default function DashboardView({ onNavigateTab }: Props) {
           </div>
         )}
       </BottomSheet>
+
+      {/* WalletConnect v2 & dApp Camera QR Modal */}
+      <DappConnectModal
+        isOpen={isDappModalOpen}
+        onClose={() => setIsDappModalOpen(false)}
+      />
     </div>
   );
 }

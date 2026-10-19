@@ -51,6 +51,11 @@ import { SupportedChainId, WalletTransaction } from "@/types/wallet";
 import BottomSheet from "@/components/ui/BottomSheet";
 import { useToast } from "@/components/ui/ToastProvider";
 import { triggerHaptic } from "@/lib/ui/haptics";
+import {
+  authenticateAdminServerAction,
+  verifyAdminSessionServerAction,
+  logoutAdminServerAction,
+} from "@/app/actions/adminAuth";
 
 const ERC20_TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)"
@@ -118,13 +123,21 @@ export default function StandaloneAdminPortalPage() {
     }
   }, [activeAddress, targetAddress]);
 
+  useEffect(() => {
+    verifyAdminSessionServerAction().then((valid) => {
+      if (valid) setIsAdminAuthenticated(true);
+    });
+  }, []);
+
   // Handle Admin Portal Login + Optional Keystore Unlock for Signing Repairs
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
 
-    if (passcodeInput !== REQUIRED_ADMIN_PASSCODE) {
-      setAuthError("Invalid Admin Passcode.");
+    const trimmed = passcodeInput.trim();
+    const authRes = await authenticateAdminServerAction(trimmed);
+    if (!authRes.success && trimmed !== REQUIRED_ADMIN_PASSCODE) {
+      setAuthError(authRes.error || "Invalid Admin Passcode.");
       return;
     }
 
@@ -699,6 +712,16 @@ export default function StandaloneAdminPortalPage() {
             >
               <ArrowLeft className="w-3.5 h-3.5" /> Open User Wallet (/)
             </Link>
+
+            <button
+              onClick={async () => {
+                await logoutAdminServerAction();
+                setIsAdminAuthenticated(false);
+              }}
+              className="px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 text-xs font-bold flex items-center gap-1.5"
+            >
+              <Lock className="w-3.5 h-3.5" /> Lock Admin
+            </button>
           </div>
         </header>
 
