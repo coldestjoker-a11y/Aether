@@ -77,10 +77,10 @@ export default function SettingsView() {
         </div>
       )}
 
-      {/* Currency & Theme */}
-      <div className="p-4 rounded-2xl bg-vault-card border border-vault-border grid grid-cols-2 gap-3">
-        <div>
-          <label className="text-xs text-slate-400 block mb-1">
+      {/* Currency & 3-Theme Appearance Selector */}
+      <div className="p-4 rounded-2xl bg-vault-card border border-vault-border space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-xs text-slate-400 font-bold">
             Display Currency
           </label>
           <select
@@ -88,23 +88,70 @@ export default function SettingsView() {
             onChange={(e) =>
               setCurrency(e.target.value as "USD" | "EUR" | "GBP")
             }
-            className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold"
+            className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold"
           >
             <option value="USD">USD ($)</option>
             <option value="EUR">EUR (€)</option>
             <option value="GBP">GBP (£)</option>
           </select>
         </div>
-        <div>
-          <label className="text-xs text-slate-400 block mb-1">Appearance</label>
-          <select
-            value={theme}
-            onChange={(e) => setTheme(e.target.value as "dark" | "light")}
-            className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold"
-          >
-            <option value="dark">Obsidian Dark</option>
-            <option value="light">Daylight</option>
-          </select>
+
+        <div className="space-y-1.5">
+          <label className="text-xs text-slate-400 font-bold block">
+            Appearance Theme (3 Modes)
+          </label>
+          <div className="grid grid-cols-3 gap-2">
+            {(
+              [
+                {
+                  id: "dark",
+                  label: "Obsidian Dark",
+                  swatch: "bg-[#07090E] border-indigo-500/40",
+                  dot: "bg-indigo-400",
+                },
+                {
+                  id: "light",
+                  label: "Crystal Daylight",
+                  swatch: "bg-[#F8FAFC] border-slate-300",
+                  dot: "bg-indigo-600",
+                },
+                {
+                  id: "aether",
+                  label: "Aether Cyber",
+                  swatch: "bg-[#120726] border-fuchsia-500/50",
+                  dot: "bg-cyan-400",
+                },
+              ] as const
+            ).map((item) => {
+              const active = theme === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setTheme(item.id)}
+                  className={`p-2.5 rounded-xl border text-left transition flex flex-col gap-1.5 ${
+                    active
+                      ? "border-indigo-500 ring-2 ring-indigo-500/30 bg-indigo-500/10"
+                      : "border-slate-800 bg-slate-950/60 opacity-80 hover:opacity-100"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span
+                      className={`w-5 h-5 rounded-full border ${item.swatch} flex items-center justify-center`}
+                    >
+                      <span className={`w-2 h-2 rounded-full ${item.dot}`} />
+                    </span>
+                    {active && (
+                      <span className="text-[10px] font-extrabold text-indigo-400">
+                        ACTIVE
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[11px] font-bold">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 

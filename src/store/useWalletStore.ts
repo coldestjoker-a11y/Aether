@@ -61,7 +61,7 @@ interface WalletState {
   transactions: WalletTransaction[];
   processedIncomingHashes: string[];
   currency: "USD" | "EUR" | "GBP";
-  theme: "dark" | "light";
+  theme: "dark" | "light" | "aether";
 
   onChainBalances: Record<string, string>;
   swapLedgerDeltas: Record<string, string>;
@@ -127,7 +127,7 @@ interface WalletState {
 
   setAutoLockMinutes: (minutes: number) => void;
   setBiometricCredentialId: (id: string | null) => void;
-  setTheme: (theme: "dark" | "light") => void;
+  setTheme: (theme: "dark" | "light" | "aether") => void;
   setCurrency: (currency: "USD" | "EUR" | "GBP") => void;
   resetWallet: () => void;
 }

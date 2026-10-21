@@ -36,6 +36,12 @@ export default function WalletAppPage() {
   const [selectedTokenForAction, setSelectedTokenForAction] =
     useState<TokenAsset | null>(null);
 
+  React.useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+  }, [theme]);
+
   if (!activeAddress || !isUnlocked) {
     return <OnboardingView />;
   }
@@ -45,16 +51,29 @@ export default function WalletAppPage() {
 
   return (
     <main
-      className={`min-h-screen flex justify-center transition-colors duration-300 ${
-        theme === "light"
-          ? "bg-slate-100 text-slate-900"
-          : "bg-vault-bg text-white"
-      }`}
+      data-theme={theme}
+      className="min-h-screen flex justify-center bg-vault-bg transition-colors duration-300"
     >
-      {/* Ambient Background Glow */}
+      {/* Dynamic Ambient Glow Matching Active Theme */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute -top-28 left-1/2 -translate-x-1/2 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl" />
-        <div className="absolute bottom-10 left-1/3 w-72 h-72 bg-emerald-500/10 rounded-full blur-3xl" />
+        <div
+          className={`absolute -top-28 left-1/2 -translate-x-1/2 w-96 h-96 rounded-full blur-3xl ${
+            theme === "light"
+              ? "bg-indigo-400/20"
+              : theme === "aether"
+              ? "bg-fuchsia-600/25"
+              : "bg-indigo-600/15"
+          }`}
+        />
+        <div
+          className={`absolute bottom-10 left-1/3 w-72 h-72 rounded-full blur-3xl ${
+            theme === "light"
+              ? "bg-emerald-400/15"
+              : theme === "aether"
+              ? "bg-cyan-500/20"
+              : "bg-emerald-500/10"
+          }`}
+        />
       </div>
 
       <div className="w-full max-w-md min-h-screen flex flex-col justify-between p-4 relative z-10">

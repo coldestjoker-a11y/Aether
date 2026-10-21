@@ -2,9 +2,164 @@
 @tailwind components;
 @tailwind utilities;
 
+:root,
+[data-theme="dark"] {
+  --vault-bg: #07090E;
+  --vault-card: rgba(17, 22, 34, 0.82);
+  --vault-surface: #030712;
+  --vault-border: rgba(255, 255, 255, 0.09);
+  --vault-text: #F8FAFC;
+  --vault-muted: #94A3B8;
+}
+
+/* 1. ENHANCED CRYSTAL DAYLIGHT: High-contrast ink on pearl/white glass so zero text is ever blocked */
+[data-theme="light"] {
+  --vault-bg: #F1F5F9;
+  --vault-card: rgba(255, 255, 255, 0.94);
+  --vault-surface: #F8FAFC;
+  --vault-border: rgba(15, 23, 42, 0.12);
+  --vault-text: #0F172A;
+  --vault-muted: #475569;
+}
+
+/* 2. NEW 3RD THEME — AETHER CYBER: Deep Cosmic Amethyst + Electric Cyan Glow */
+[data-theme="aether"] {
+  --vault-bg: #0B0418;
+  --vault-card: rgba(24, 11, 46, 0.84);
+  --vault-surface: #120726;
+  --vault-border: rgba(168, 85, 247, 0.24);
+  --vault-text: #FAF5FF;
+  --vault-muted: #C084FC;
+}
+
 body {
-  background-color: #07090E;
-  color: #F8FAFC;
+  background-color: var(--vault-bg);
+  color: var(--vault-text);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   overscroll-behavior-y: contain;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+/* ============================================================================
+   AUTOMATIC DAYLIGHT CONTRAST REMAPPING
+   Ensures every card, input, dropdown, and text label in Daylight mode has
+   WCAG AAA contrast without breaking Obsidian Dark!
+   ============================================================================ */
+[data-theme="light"] .bg-vault-bg {
+  background-color: #F1F5F9 !important;
+}
+
+[data-theme="light"] .bg-vault-card {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(15, 23, 42, 0.1) !important;
+  box-shadow: 0 10px 30px -10px rgba(15, 23, 42, 0.07) !important;
+}
+
+[data-theme="light"] .bg-slate-950,
+[data-theme="light"] .bg-slate-950\/90,
+[data-theme="light"] .bg-slate-950\/80,
+[data-theme="light"] .bg-slate-950\/70 {
+  background-color: #F8FAFC !important;
+  border-color: #CBD5E1 !important;
+  color: #0F172A !important;
+}
+
+[data-theme="light"] .bg-slate-900,
+[data-theme="light"] .bg-slate-900\/95,
+[data-theme="light"] .bg-slate-900\/90,
+[data-theme="light"] .bg-slate-900\/85,
+[data-theme="light"] .bg-slate-900\/80,
+[data-theme="light"] .bg-slate-900\/70,
+[data-theme="light"] .bg-slate-900\/60 {
+  background-color: #FFFFFF !important;
+  border-color: #CBD5E1 !important;
+  color: #0F172A !important;
+}
+
+[data-theme="light"] .bg-slate-800,
+[data-theme="light"] .bg-slate-800\/80 {
+  background-color: #E2E8F0 !important;
+  color: #0F172A !important;
+}
+
+/* Remap Portfolio Hero Card in Daylight to a rich Royal Indigo-to-Slate card so white hero text stays crisp, OR remap standard text to dark slate */
+[data-theme="light"] .text-white {
+  color: #0F172A !important;
+}
+
+/* Keep white text inside solid primary action buttons & badges */
+[data-theme="light"] button.bg-indigo-600,
+[data-theme="light"] button.bg-emerald-600,
+[data-theme="light"] button.from-indigo-600,
+[data-theme="light"] button.from-emerald-600,
+[data-theme="light"] .bg-indigo-600.text-white,
+[data-theme="light"] .bg-indigo-500.text-white {
+  color: #FFFFFF !important;
+}
+
+[data-theme="light"] .text-slate-200,
+[data-theme="light"] .text-slate-300 {
+  color: #1E293B !important;
+}
+
+[data-theme="light"] .text-slate-400,
+[data-theme="light"] .text-slate-500 {
+  color: #475569 !important;
+}
+
+[data-theme="light"] .text-indigo-300,
+[data-theme="light"] .text-indigo-200 {
+  color: #4338CA !important;
+}
+
+[data-theme="light"] .text-emerald-300,
+[data-theme="light"] .text-emerald-400 {
+  color: #047857 !important;
+}
+
+[data-theme="light"] .text-amber-300,
+[data-theme="light"] .text-amber-400 {
+  color: #B45309 !important;
+}
+
+[data-theme="light"] .text-rose-300,
+[data-theme="light"] .text-rose-400 {
+  color: #BE123C !important;
+}
+
+[data-theme="light"] .from-indigo-950\/80 {
+  background-image: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 50%, #F8FAFC 100%) !important;
+  border-color: #C7D2FE !important;
+}
+
+/* ============================================================================
+   AETHER CYBER (3RD THEME) NEON AMETHYST & CYAN STYLING
+   ============================================================================ */
+[data-theme="aether"] .bg-vault-bg {
+  background-color: #0B0418 !important;
+}
+
+[data-theme="aether"] .bg-vault-card {
+  background-color: rgba(24, 11, 46, 0.85) !important;
+  border-color: rgba(168, 85, 247, 0.28) !important;
+  box-shadow: 0 0 28px rgba(139, 92, 246, 0.14) !important;
+}
+
+[data-theme="aether"] .bg-slate-950,
+[data-theme="aether"] .bg-slate-950\/90,
+[data-theme="aether"] .bg-slate-950\/80 {
+  background-color: #120726 !important;
+  border-color: rgba(168, 85, 247, 0.25) !important;
+}
+
+[data-theme="aether"] .bg-slate-900,
+[data-theme="aether"] .bg-slate-900\/90,
+[data-theme="aether"] .bg-slate-900\/85 {
+  background-color: rgba(31, 14, 61, 0.9) !important;
+  border-color: rgba(192, 132, 252, 0.22) !important;
+}
+
+[data-theme="aether"] .from-indigo-950\/80 {
+  background-image: linear-gradient(135deg, rgba(59, 7, 100, 0.88) 0%, rgba(30, 10, 60, 0.95) 55%, rgba(6, 24, 44, 0.95) 100%) !important;
+  border-color: rgba(34, 211, 238, 0.35) !important;
 }
