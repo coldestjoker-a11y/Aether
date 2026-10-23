@@ -1,11 +1,27 @@
 "use client";
 
 import React, { useState } from "react";
-import { Eye, Trash2, Lock, PlusCircle, Server } from "lucide-react";
+import {
+  Eye,
+  EyeOff,
+  Trash2,
+  Lock,
+  PlusCircle,
+  Server,
+  Copy,
+  Check,
+  KeyRound,
+  FileText,
+} from "lucide-react";
 import { useWalletStore } from "@/store/useWalletStore";
 import { decryptKeystoreSecret } from "@/lib/crypto/keystore";
+import {
+  deriveAccountFromMnemonic,
+  deriveAccountFromPrivateKey,
+} from "@/lib/crypto/hdwallet";
 import { CHAIN_METADATA } from "@/lib/chains/config";
 import { resolveOnChainERC20Token } from "@/lib/tokens/registry";
+import { triggerHaptic } from "@/lib/ui/haptics";
 
 export default function SettingsView() {
   const {
@@ -27,19 +43,55 @@ export default function SettingsView() {
   );
   const [tokenAddr, setTokenAddr] = useState<string>("");
   const [revealPassword, setRevealPassword] = useState<string>("");
-  const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
+
+  // Holds BOTH the 12-word recovery phrase and the derived 0x private key
+  const [revealedData, setRevealedData] = useState<{
+    mnemonic: string | null;
+    privateKey: string;
+  } | null>(null);
+
+  const [copiedType, setCopiedType] = useState<"mnemonic" | "privateKey" | null>(
+    null
+  );
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  const handleRevealSeed = async (e: React.FormEvent) => {
+  const handleRevealSecrets = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!keystore) return;
+    setStatusMsg(null);
+
     try {
-      const secret = await decryptKeystoreSecret(keystore, revealPassword);
-      setRevealedSecret(secret);
+      const rawSecret = await decryptKeystoreSecret(keystore, revealPassword);
+
+      if (keystore.sourceType === "mnemonic") {
+        // Derive the exact 0x hex Private Key from the 12-word mnemonic so BOTH are shown!
+        const { privateKeyHex } = deriveAccountFromMnemonic(rawSecret);
+        setRevealedData({
+          mnemonic: rawSecret,
+          privateKey: privateKeyHex,
+        });
+      } else {
+        // Wallet was imported using only a raw private key
+        const { privateKeyHex } = deriveAccountFromPrivateKey(rawSecret);
+        setRevealedData({
+          mnemonic: null,
+          privateKey: privateKeyHex,
+        });
+      }
+
       setRevealPassword("");
+      triggerHaptic("success");
     } catch (err: unknown) {
+      triggerHaptic("error");
       setStatusMsg(err instanceof Error ? err.message : "Wrong password");
     }
+  };
+
+  const copySecret = (text: string, type: "mnemonic" | "privateKey") => {
+    navigator.clipboard.writeText(text);
+    setCopiedType(type);
+    triggerHaptic("success");
+    setTimeout(() => setCopiedType(null), 1800);
   };
 
   const handleAutoImportToken = async () => {
@@ -56,7 +108,7 @@ export default function SettingsView() {
     }
     addCustomToken(resolved);
     setTokenAddr("");
-    setStatusMsg(`Added ${resolved.name} (${resolved.symbol}) with live logo!`);
+    setStatusMsg(`Added ${resolved.name} (${resolved.symbol})!`);
   };
 
   return (
@@ -77,10 +129,10 @@ export default function SettingsView() {
         </div>
       )}
 
-      {/* Currency & 3-Theme Appearance Selector */}
-      <div className="p-4 rounded-2xl bg-vault-card border border-vault-border space-y-3">
-        <div className="flex items-center justify-between">
-          <label className="text-xs text-slate-400 font-bold">
+      {/* Currency & Appearance Dropdowns (Side-by-Side as Requested) */}
+      <div className="p-4 rounded-2xl bg-vault-card border border-vault-border grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-slate-400 block mb-1">
             Display Currency
           </label>
           <select
@@ -88,7 +140,7 @@ export default function SettingsView() {
             onChange={(e) =>
               setCurrency(e.target.value as "USD" | "EUR" | "GBP")
             }
-            className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold"
+            className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold"
           >
             <option value="USD">USD ($)</option>
             <option value="EUR">EUR (€)</option>
@@ -96,62 +148,21 @@ export default function SettingsView() {
           </select>
         </div>
 
-        <div className="space-y-1.5">
-          <label className="text-xs text-slate-400 font-bold block">
-            Appearance Theme (3 Modes)
+        <div>
+          <label className="text-xs text-slate-400 block mb-1">
+            Appearance
           </label>
-          <div className="grid grid-cols-3 gap-2">
-            {(
-              [
-                {
-                  id: "dark",
-                  label: "Obsidian Dark",
-                  swatch: "bg-[#07090E] border-indigo-500/40",
-                  dot: "bg-indigo-400",
-                },
-                {
-                  id: "light",
-                  label: "Crystal Daylight",
-                  swatch: "bg-[#F8FAFC] border-slate-300",
-                  dot: "bg-indigo-600",
-                },
-                {
-                  id: "aether",
-                  label: "Aether Cyber",
-                  swatch: "bg-[#120726] border-fuchsia-500/50",
-                  dot: "bg-cyan-400",
-                },
-              ] as const
-            ).map((item) => {
-              const active = theme === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setTheme(item.id)}
-                  className={`p-2.5 rounded-xl border text-left transition flex flex-col gap-1.5 ${
-                    active
-                      ? "border-indigo-500 ring-2 ring-indigo-500/30 bg-indigo-500/10"
-                      : "border-slate-800 bg-slate-950/60 opacity-80 hover:opacity-100"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span
-                      className={`w-5 h-5 rounded-full border ${item.swatch} flex items-center justify-center`}
-                    >
-                      <span className={`w-2 h-2 rounded-full ${item.dot}`} />
-                    </span>
-                    {active && (
-                      <span className="text-[10px] font-extrabold text-indigo-400">
-                        ACTIVE
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[11px] font-bold">{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
+          <select
+            value={theme}
+            onChange={(e) =>
+              setTheme(e.target.value as "dark" | "light" | "aether")
+            }
+            className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold"
+          >
+            <option value="dark">Obsidian Dark</option>
+            <option value="light">Crystal Daylight</option>
+            <option value="aether">Aether Cyber</option>
+          </select>
         </div>
       </div>
 
@@ -170,11 +181,12 @@ export default function SettingsView() {
             className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono"
           />
           <button
+            type="button"
             onClick={() => {
               setCustomRpc(activeChainId, rpcInput);
               setStatusMsg("Custom RPC saved.");
             }}
-            className="px-4 py-2 rounded-xl bg-indigo-600 text-xs font-bold"
+            className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold"
           >
             Save
           </button>
@@ -196,23 +208,36 @@ export default function SettingsView() {
             className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono"
           />
           <button
+            type="button"
             onClick={handleAutoImportToken}
-            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold"
+            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold"
           >
             Auto-Detect
           </button>
         </div>
       </div>
 
-      {/* Reveal Recovery Phrase with Password Re-Entry */}
+      {/* Reveal BOTH Recovery Phrase AND Private Key with Password Re-Entry */}
       <form
-        onSubmit={handleRevealSeed}
-        className="p-4 rounded-2xl bg-vault-card border border-vault-border space-y-2.5"
+        onSubmit={handleRevealSecrets}
+        className="p-4 rounded-2xl bg-vault-card border border-vault-border space-y-3"
       >
-        <div className="text-xs font-bold flex items-center gap-1.5">
-          <Eye className="w-4 h-4 text-indigo-400" />
-          <span>Reveal Recovery Phrase / Private Key</span>
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-bold flex items-center gap-1.5">
+            <Eye className="w-4 h-4 text-indigo-400" />
+            <span>Export Recovery Phrase & Private Key</span>
+          </div>
+          {revealedData && (
+            <button
+              type="button"
+              onClick={() => setRevealedData(null)}
+              className="text-[11px] text-slate-400 hover:text-white flex items-center gap-1"
+            >
+              <EyeOff className="w-3 h-3" /> Hide Secrets
+            </button>
+          )}
         </div>
+
         <div className="flex gap-2">
           <input
             type="password"
@@ -220,27 +245,90 @@ export default function SettingsView() {
             onChange={(e) => setRevealPassword(e.target.value)}
             placeholder="Re-enter vault password"
             className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs"
+            required
           />
           <button
             type="submit"
-            className="px-4 py-2 rounded-xl bg-indigo-600 text-xs font-bold"
+            className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold"
           >
             Decrypt
           </button>
         </div>
-        {revealedSecret && (
-          <div className="p-3 rounded-xl bg-slate-950 border border-amber-500/40 font-mono text-xs text-amber-300 break-all">
-            {revealedSecret}
+
+        {revealedData && (
+          <div className="space-y-3 pt-1">
+            {/* 1. 12-Word Secret Recovery Phrase */}
+            {revealedData.mnemonic && (
+              <div className="p-3 rounded-xl bg-slate-950 border border-amber-500/40 space-y-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-bold text-amber-300 flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5" />
+                    Secret Recovery Phrase (12 Words)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      copySecret(revealedData.mnemonic!, "mnemonic")
+                    }
+                    className="text-emerald-400 font-semibold flex items-center gap-1"
+                  >
+                    {copiedType === "mnemonic" ? (
+                      <>
+                        <Check className="w-3 h-3" /> Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" /> Copy Phrase
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="font-mono text-xs text-slate-200 break-words leading-relaxed select-all">
+                  {revealedData.mnemonic}
+                </div>
+              </div>
+            )}
+
+            {/* 2. Hexadecimal Private Key (0x...) */}
+            <div className="p-3 rounded-xl bg-slate-950 border border-indigo-500/40 space-y-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-bold text-indigo-300 flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5" />
+                  Account Private Key (Hex)
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    copySecret(revealedData.privateKey, "privateKey")
+                  }
+                  className="text-emerald-400 font-semibold flex items-center gap-1"
+                >
+                  {copiedType === "privateKey" ? (
+                    <>
+                      <Check className="w-3 h-3" /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" /> Copy Key
+                    </>
+                  )}
+                </button>
+              </div>
+              <div className="font-mono text-xs text-emerald-300 break-all select-all">
+                {revealedData.privateKey}
+              </div>
+            </div>
           </div>
         )}
       </form>
 
       {/* Danger Zone: Wipe Wallet */}
       <button
+        type="button"
         onClick={() => {
           if (
             window.confirm(
-              "Wipe encrypted keystore from this device? Ensure you have backed up your recovery phrase."
+              "Wipe encrypted keystore from this device? Ensure you have backed up your recovery phrase and private key."
             )
           ) {
             resetWallet();
