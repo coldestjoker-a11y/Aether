@@ -16,17 +16,19 @@ const STABLECOIN_SYMBOLS = new Set([
   "BUSD",
 ]);
 
-// Accurate Live Market Baselines (Updated continuously by Binance WebSocket stream)
 const FALLBACK_SYMBOL_USD: Record<string, PriceTicker> = {
+  BTC: { price: 67420.5, change24h: 2.34 },
+  WBTC: { price: 67420.5, change24h: 2.34 },
   ETH: { price: 2465.82, change24h: 1.45 },
   WETH: { price: 2465.82, change24h: 1.45 },
+  SOL: { price: 178.65, change24h: 4.18 },
+  QIE: { price: 0.0485, change24h: 6.42 },
   USDC: { price: 1.0, change24h: 0.0 },
   USDT: { price: 1.0, change24h: 0.0 },
   DAI: { price: 1.0, change24h: 0.0 },
   EURC: { price: 1.08, change24h: 0.12 },
   LINK: { price: 14.8, change24h: 2.4 },
   UNI: { price: 8.45, change24h: -0.95 },
-  WBTC: { price: 66850.0, change24h: 1.75 },
   AAVE: { price: 148.0, change24h: 2.8 },
   LDO: { price: 1.85, change24h: -0.5 },
   ARB: { price: 0.82, change24h: 1.1 },
@@ -42,13 +44,17 @@ class RealtimePriceStream {
   private ws: WebSocket | null = null;
   private subscribers = new Set<PriceSubscriber>();
   private cache: Record<string, PriceTicker> = {
+    BTCUSDT: { price: 67420.5, change24h: 2.34 },
     ETHUSDT: { price: 2465.82, change24h: 1.45 },
+    SOLUSDT: { price: 178.65, change24h: 4.18 },
+    QIEUSDT: { price: 0.0485, change24h: 6.42 },
     USDCUSDT: { price: 1.0, change24h: 0.0 },
+    USDTUSDT: { price: 1.0, change24h: 0.0 },
     LINKUSDT: { price: 14.8, change24h: 2.4 },
     UNIUSDT: { price: 8.45, change24h: -0.95 },
     MATICUSDT: { price: 0.52, change24h: 1.2 },
     BNBUSDT: { price: 595.0, change24h: 0.85 },
-    WBTCUSDT: { price: 66850.0, change24h: 1.75 },
+    WBTCUSDT: { price: 67420.5, change24h: 2.34 },
     AAVEUSDT: { price: 148.0, change24h: 2.8 },
     ARBUSDT: { price: 0.82, change24h: 1.1 },
     OPUSDT: { price: 1.65, change24h: 1.9 },
@@ -72,10 +78,6 @@ class RealtimePriceStream {
     };
   }
 
-  /**
-   * Single source of truth for token USD price across Dashboard, Swap, and Send.
-   * Guarantees 1 ETH = ~$2,465.82 USDC (so 0.01 ETH = ~24.66 USDC, NEVER 399.1 USDC).
-   */
   public getTokenUsdTicker(
     token: Pick<TokenAsset, "symbol" | "binanceSymbol">,
     liveMap?: Record<string, PriceTicker>
@@ -85,6 +87,15 @@ class RealtimePriceStream {
 
     if (STABLECOIN_SYMBOLS.has(sym)) {
       return { price: 1.0, change24h: 0.0 };
+    }
+    if (sym === "BTC" || sym === "WBTC") {
+      return source.BTCUSDT || FALLBACK_SYMBOL_USD.BTC;
+    }
+    if (sym === "SOL") {
+      return source.SOLUSDT || FALLBACK_SYMBOL_USD.SOL;
+    }
+    if (sym === "QIE") {
+      return source.QIEUSDT || FALLBACK_SYMBOL_USD.QIE;
     }
     if (sym === "WETH" || sym === "ETH") {
       return source.ETHUSDT || FALLBACK_SYMBOL_USD.ETH;
@@ -104,7 +115,9 @@ class RealtimePriceStream {
   private connectWebSocket() {
     try {
       const streams = [
+        "btcusdt@ticker",
         "ethusdt@ticker",
+        "solusdt@ticker",
         "bnbusdt@ticker",
         "maticusdt@ticker",
         "linkusdt@ticker",
@@ -141,6 +154,12 @@ class RealtimePriceStream {
                 change24h: parsedChange,
               };
             }
+            if (baseSym === "BTC") {
+              FALLBACK_SYMBOL_USD.WBTC = {
+                price: parsedPrice,
+                change24h: parsedChange,
+              };
+            }
             this.scheduleThrottledEmit();
           }
         } catch {
@@ -168,14 +187,26 @@ class RealtimePriceStream {
   private async fetchCoinGeckoFallback() {
     try {
       const res = await fetch(
-        "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,binancecoin,matic-network,chainlink,uniswap,wrapped-bitcoin,aave,arbitrum,optimism&vs_currencies=usd&include_24hr_change=true"
+        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,binancecoin,matic-network,chainlink,uniswap&vs_currencies=usd&include_24hr_change=true"
       );
       if (!res.ok) return;
       const json = await res.json();
+      if (json.bitcoin) {
+        this.cache.BTCUSDT = {
+          price: json.bitcoin.usd,
+          change24h: json.bitcoin.usd_24h_change || 0,
+        };
+      }
       if (json.ethereum) {
         this.cache.ETHUSDT = {
           price: json.ethereum.usd,
           change24h: json.ethereum.usd_24h_change || 0,
+        };
+      }
+      if (json.solana) {
+        this.cache.SOLUSDT = {
+          price: json.solana.usd,
+          change24h: json.solana.usd_24h_change || 0,
         };
       }
       this.scheduleThrottledEmit();

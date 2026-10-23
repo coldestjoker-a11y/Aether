@@ -15,8 +15,10 @@ const TRUSTWALLET_CHAIN_SLUG: Record<SupportedChainId, string> = {
   10: "optimism",
 };
 
-// Canonical Mainnet contract addresses for popular symbols so Sepolia testnet tokens also show real logos
 const CANONICAL_SYMBOL_LOGOS: Record<string, string> = {
+  BTC: "https://assets.coincap.io/assets/icons/btc@2x.png",
+  SOL: "https://assets.coincap.io/assets/icons/sol@2x.png",
+  QIE: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='q' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='%236366F1'/><stop offset='100%' stop-color='%2310B981'/></linearGradient></defs><circle cx='50' cy='50' r='48' fill='url(%23q)'/><text x='50' y='62' font-family='Arial,sans-serif' font-weight='900' font-size='36' fill='white' text-anchor='middle'>QIE</text></svg>",
   ETH: "https://assets.coincap.io/assets/icons/eth@2x.png",
   WETH: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2/logo.png",
   USDC: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48/logo.png",
@@ -52,17 +54,14 @@ export function TokenLogo({
     const urls: string[] = [];
     const upperSym = token.symbol.toUpperCase();
 
-    // 1. Explicit logoURI from aggregator (LI.FI / 0x / Uniswap)
     if (token.logoURI) {
       urls.push(token.logoURI);
     }
 
-    // 2. Canonical verified high-res icon for common tickers
     if (CANONICAL_SYMBOL_LOGOS[upperSym]) {
       urls.push(CANONICAL_SYMBOL_LOGOS[upperSym]);
     }
 
-    // 3. TrustWallet Assets GitHub CDN by EIP-55 Checksummed Contract Address
     if (token.address && token.address !== "NATIVE" && isAddress(token.address)) {
       try {
         const checksummed = getAddress(token.address);
@@ -75,7 +74,6 @@ export function TokenLogo({
       }
     }
 
-    // 4. Live CoinCap Symbol CDN
     urls.push(
       `https://assets.coincap.io/assets/icons/${token.symbol.toLowerCase()}@2x.png`
     );
@@ -119,9 +117,6 @@ export function TokenLogo({
   );
 }
 
-/**
- * Overlapping Dual-Icon Component for Swap Pairs (e.g., ETH / USDC)
- */
 export function TokenPairLogo({
   sellToken,
   buyToken,
@@ -142,4 +137,3 @@ export function TokenPairLogo({
     </div>
   );
 }
-

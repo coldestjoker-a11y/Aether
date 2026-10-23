@@ -8,7 +8,7 @@ import {
   ArrowDownLeft,
   RefreshCw,
   Repeat,
-  CreditCard,
+  Droplets,
   TrendingUp,
   TrendingDown,
   Copy,
@@ -378,10 +378,10 @@ export default function DashboardView({ onNavigateTab }: Props) {
             {
               id: "deposit",
               testId: "quick-btn-deposit",
-              label: "Buy / Bridge",
-              icon: CreditCard,
-              color: "text-amber-400",
-              bg: "group-hover:bg-amber-500/20",
+              label: "Faucet",
+              icon: Droplets,
+              color: "text-cyan-400",
+              bg: "group-hover:bg-cyan-500/20",
             },
           ].map((action) => {
             const Icon = action.icon;

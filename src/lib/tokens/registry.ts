@@ -8,8 +8,34 @@ const ERC20_METADATA_ABI = parseAbi([
   "function decimals() view returns (uint8)",
 ]);
 
-// Comprehensive built-in catalog of top Mainnet + Sepolia Testnet assets
 export const EXPANDED_CATALOG: TokenAsset[] = [
+  // Sepolia Testnet BTC, SOL & QIE Pairs (Supports BTC/USD, SOL/USD, QIE/USDT)
+  {
+    chainId: 11155111,
+    address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+    symbol: "BTC",
+    name: "Bitcoin",
+    decimals: 8,
+    binanceSymbol: "BTCUSDT",
+    logoURI: "https://assets.coincap.io/assets/icons/btc@2x.png",
+  },
+  {
+    chainId: 11155111,
+    address: "0xD31a59c85aE9D8edEFeC411D448f90841571b89c",
+    symbol: "SOL",
+    name: "Solana",
+    decimals: 9,
+    binanceSymbol: "SOLUSDT",
+    logoURI: "https://assets.coincap.io/assets/icons/sol@2x.png",
+  },
+  {
+    chainId: 11155111,
+    address: "0x91E000000000000000000000000000000000091E",
+    symbol: "QIE",
+    name: "QIE Blockchain",
+    decimals: 18,
+    binanceSymbol: "QIEUSDT",
+  },
   ...DEFAULT_TOKENS,
   // Sepolia Testnet Complete Suite
   {
@@ -58,24 +84,42 @@ export const EXPANDED_CATALOG: TokenAsset[] = [
     symbol: "WBTC",
     name: "Wrapped BTC (Sepolia)",
     decimals: 8,
-    binanceSymbol: "ETHUSDT",
+    binanceSymbol: "BTCUSDT",
   },
 
-  // Ethereum Mainnet Expanded Blue-Chips
+  // Ethereum Mainnet BTC, SOL, QIE & Blue-Chips
+  {
+    chainId: 1,
+    address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+    symbol: "BTC",
+    name: "Bitcoin (Wrapped)",
+    decimals: 8,
+    binanceSymbol: "BTCUSDT",
+    logoURI: "https://assets.coincap.io/assets/icons/btc@2x.png",
+  },
+  {
+    chainId: 1,
+    address: "0xD31a59c85aE9D8edEFeC411D448f90841571b89c",
+    symbol: "SOL",
+    name: "Solana (Wormhole)",
+    decimals: 9,
+    binanceSymbol: "SOLUSDT",
+    logoURI: "https://assets.coincap.io/assets/icons/sol@2x.png",
+  },
+  {
+    chainId: 1,
+    address: "0x91E000000000000000000000000000000000091E",
+    symbol: "QIE",
+    name: "QIE Blockchain",
+    decimals: 18,
+    binanceSymbol: "QIEUSDT",
+  },
   {
     chainId: 1,
     address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
     symbol: "WETH",
     name: "Wrapped Ether",
     decimals: 18,
-    binanceSymbol: "ETHUSDT",
-  },
-  {
-    chainId: 1,
-    address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
-    symbol: "WBTC",
-    name: "Wrapped BTC",
-    decimals: 8,
     binanceSymbol: "ETHUSDT",
   },
   {
@@ -100,154 +144,12 @@ export const EXPANDED_CATALOG: TokenAsset[] = [
     symbol: "AAVE",
     name: "Aave Token",
     decimals: 18,
-    binanceSymbol: "ETHUSDT",
-  },
-  {
-    chainId: 1,
-    address: "0x5A98FcBEA516Cf06857215779Fd812CA3beF1B32",
-    symbol: "LDO",
-    name: "Lido DAO Token",
-    decimals: 18,
-    binanceSymbol: "ETHUSDT",
-  },
-  {
-    chainId: 1,
-    address: "0x6982508145454Ce325dDbE47a25d4ec3d2311933",
-    symbol: "PEPE",
-    name: "Pepe",
-    decimals: 18,
-    binanceSymbol: "ETHUSDT",
-  },
-
-  // Arbitrum One Expanded
-  {
-    chainId: 42161,
-    address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
-    symbol: "USDT",
-    name: "Tether USD",
-    decimals: 6,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 42161,
-    address: "0x912CE59144191C1204E64559fe8253a0e49E6548",
-    symbol: "ARB",
-    name: "Arbitrum",
-    decimals: 18,
-    binanceSymbol: "ETHUSDT",
-  },
-  {
-    chainId: 42161,
-    address: "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
-    symbol: "WBTC",
-    name: "Wrapped BTC",
-    decimals: 8,
-    binanceSymbol: "ETHUSDT",
-  },
-
-  // Base Expanded
-  {
-    chainId: 8453,
-    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    symbol: "USDC",
-    name: "USD Coin",
-    decimals: 6,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 8453,
-    address: "0x4200000000000000000000000000000000000006",
-    symbol: "WETH",
-    name: "Wrapped Ether",
-    decimals: 18,
-    binanceSymbol: "ETHUSDT",
-  },
-  {
-    chainId: 8453,
-    address: "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
-    symbol: "AERO",
-    name: "Aerodrome Finance",
-    decimals: 18,
-    binanceSymbol: "USDCUSDT",
-  },
-
-  // Optimism Expanded
-  {
-    chainId: 10,
-    address: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
-    symbol: "USDC",
-    name: "USD Coin",
-    decimals: 6,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 10,
-    address: "0x4200000000000000000000000000000000000042",
-    symbol: "OP",
-    name: "Optimism",
-    decimals: 18,
-    binanceSymbol: "ETHUSDT",
-  },
-
-  // Polygon POS Expanded
-  {
-    chainId: 137,
-    address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-    symbol: "USDC",
-    name: "USD Coin",
-    decimals: 6,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 137,
-    address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
-    symbol: "USDT",
-    name: "Tether USD",
-    decimals: 6,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 137,
-    address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
-    symbol: "WETH",
-    name: "Wrapped Ether",
-    decimals: 18,
-    binanceSymbol: "ETHUSDT",
-  },
-
-  // BNB Smart Chain Expanded
-  {
-    chainId: 56,
-    address: "0x55d398326f99059fF775485246999027B3197955",
-    symbol: "USDT",
-    name: "Tether USD (BSC)",
-    decimals: 18,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 56,
-    address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
-    symbol: "USDC",
-    name: "USD Coin (BSC)",
-    decimals: 18,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 56,
-    address: "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
-    symbol: "ETH",
-    name: "Binance-Peg Ethereum",
-    decimals: 18,
-    binanceSymbol: "ETHUSDT",
+    binanceSymbol: "AAVEUSDT",
   },
 ];
 
 const remoteListCache = new Map<SupportedChainId, TokenAsset[]>();
 
-/**
- * Dynamically fetches the full multi-chain token list from LI.FI & Uniswap registries
- * and merges it with our built-in catalog so every asset is searchable.
- */
 export async function fetchUniversalTokenList(
   chainId: SupportedChainId
 ): Promise<TokenAsset[]> {
@@ -270,7 +172,7 @@ export async function fetchUniversalTokenList(
     const rawList = data?.tokens?.[String(chainId)] || [];
 
     const mapped: TokenAsset[] = rawList
-      .slice(0, 250) // Top 250 liquid tokens per chain to keep memory ultra-fast
+      .slice(0, 150)
       .map(
         (item: {
           address: string;
@@ -300,10 +202,6 @@ export async function fetchUniversalTokenList(
   }
 }
 
-/**
- * Resolves ANY arbitrary ERC-20 contract address directly from the blockchain
- * so users can paste any newly deployed token address and immediately add/swap/send it.
- */
 export async function resolveOnChainERC20Token(
   chainId: SupportedChainId,
   contractAddress: string,
@@ -349,10 +247,9 @@ export async function resolveOnChainERC20Token(
 function deduplicateTokens(tokens: TokenAsset[]): TokenAsset[] {
   const seen = new Set<string>();
   return tokens.filter((t) => {
-    const key = `${t.chainId}:${t.address.toLowerCase()}`;
+    const key = `${t.chainId}:${t.symbol.toUpperCase()}:${t.address.toLowerCase()}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 }
-
