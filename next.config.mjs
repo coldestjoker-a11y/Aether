@@ -2,8 +2,10 @@
 const cspHeader = `
     default-src 'self';
     script-src 'self' 'unsafe-eval' 'unsafe-inline';
+    worker-src 'self' blob:;
     style-src 'self' 'unsafe-inline';
     img-src 'self' blob: data:
+      https://s2.coinmarketcap.com
       https://raw.githubusercontent.com
       https://assets.coingecko.com
       https://assets.coincap.io
@@ -16,6 +18,7 @@ const cspHeader = `
       https://*.publicnode.com
       https://rpc.sepolia.org
       https://1rpc.io
+      https://*.qie.digital
       https://api.0x.org https://sepolia.api.0x.org
       https://li.quest
       https://api.gopluslabs.io
@@ -23,7 +26,6 @@ const cspHeader = `
       wss://stream.binance.com:9443
       https://*.walletconnect.com wss://*.walletconnect.com
       https://*.walletconnect.org wss://*.walletconnect.org;
-    frame-src 'self' https://global-stg.transak.com https://global.transak.com;
     object-src 'none';
     base-uri 'self';
     form-action 'self';

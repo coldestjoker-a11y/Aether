@@ -15,25 +15,26 @@ const TRUSTWALLET_CHAIN_SLUG: Record<SupportedChainId, string> = {
   10: "optimism",
 };
 
+// High-Resolution Official CoinMarketCap Icons (including QIE Blockchain UCID #21988)
 const CANONICAL_SYMBOL_LOGOS: Record<string, string> = {
-  BTC: "https://assets.coincap.io/assets/icons/btc@2x.png",
-  SOL: "https://assets.coincap.io/assets/icons/sol@2x.png",
-  QIE: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='q' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='%236366F1'/><stop offset='100%' stop-color='%2310B981'/></linearGradient></defs><circle cx='50' cy='50' r='48' fill='url(%23q)'/><text x='50' y='62' font-family='Arial,sans-serif' font-weight='900' font-size='36' fill='white' text-anchor='middle'>QIE</text></svg>",
-  ETH: "https://assets.coincap.io/assets/icons/eth@2x.png",
-  WETH: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2/logo.png",
-  USDC: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48/logo.png",
-  USDT: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png",
-  DAI: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0x6B175474E89094C44Da98b954EedeAC495271d0F/logo.png",
-  LINK: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0x514910771AF9Ca656af840dff83E8264EcF986CA/logo.png",
-  UNI: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984/logo.png",
-  WBTC: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599/logo.png",
-  AAVE: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9/logo.png",
-  BNB: "https://assets.coincap.io/assets/icons/bnb@2x.png",
-  POL: "https://assets.coincap.io/assets/icons/matic@2x.png",
-  MATIC: "https://assets.coincap.io/assets/icons/matic@2x.png",
-  ARB: "https://assets.coincap.io/assets/icons/arb@2x.png",
-  OP: "https://assets.coincap.io/assets/icons/op@2x.png",
-  EURC: "https://assets.coingecko.com/coins/images/26045/standard/euro-coin.png",
+  QIE: "https://s2.coinmarketcap.com/static/img/coins/64x64/21988.png",
+  BTC: "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png",
+  SOL: "https://s2.coinmarketcap.com/static/img/coins/64x64/5426.png",
+  ETH: "https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png",
+  WETH: "https://s2.coinmarketcap.com/static/img/coins/64x64/2396.png",
+  USDC: "https://s2.coinmarketcap.com/static/img/coins/64x64/3408.png",
+  USDT: "https://s2.coinmarketcap.com/static/img/coins/64x64/825.png",
+  DAI: "https://s2.coinmarketcap.com/static/img/coins/64x64/4943.png",
+  LINK: "https://s2.coinmarketcap.com/static/img/coins/64x64/1975.png",
+  UNI: "https://s2.coinmarketcap.com/static/img/coins/64x64/7083.png",
+  WBTC: "https://s2.coinmarketcap.com/static/img/coins/64x64/3717.png",
+  AAVE: "https://s2.coinmarketcap.com/static/img/coins/64x64/7278.png",
+  BNB: "https://s2.coinmarketcap.com/static/img/coins/64x64/1839.png",
+  POL: "https://s2.coinmarketcap.com/static/img/coins/64x64/28321.png",
+  MATIC: "https://s2.coinmarketcap.com/static/img/coins/64x64/3890.png",
+  ARB: "https://s2.coinmarketcap.com/static/img/coins/64x64/11841.png",
+  OP: "https://s2.coinmarketcap.com/static/img/coins/64x64/11840.png",
+  EURC: "https://s2.coinmarketcap.com/static/img/coins/64x64/20641.png",
 };
 
 interface TokenLogoProps {
@@ -54,14 +55,17 @@ export function TokenLogo({
     const urls: string[] = [];
     const upperSym = token.symbol.toUpperCase();
 
-    if (token.logoURI) {
-      urls.push(token.logoURI);
-    }
-
+    // 1. Canonical CoinMarketCap High-Res Icon (Instant match for QIE #21988, BTC, SOL, ETH, USDT, USDC)
     if (CANONICAL_SYMBOL_LOGOS[upperSym]) {
       urls.push(CANONICAL_SYMBOL_LOGOS[upperSym]);
     }
 
+    // 2. Explicit token.logoURI
+    if (token.logoURI && !urls.includes(token.logoURI)) {
+      urls.push(token.logoURI);
+    }
+
+    // 3. TrustWallet Assets GitHub CDN by Checksummed Contract Address
     if (token.address && token.address !== "NATIVE" && isAddress(token.address)) {
       try {
         const checksummed = getAddress(token.address);
@@ -74,6 +78,7 @@ export function TokenLogo({
       }
     }
 
+    // 4. CoinCap Symbol Fallback
     urls.push(
       `https://assets.coincap.io/assets/icons/${token.symbol.toLowerCase()}@2x.png`
     );
@@ -93,6 +98,8 @@ export function TokenLogo({
         <img
           src={activeUrl}
           alt={token?.symbol || "Token"}
+          loading="eager"
+          decoding="async"
           onError={() => setSourceIndex((i) => i + 1)}
           style={{ width: size, height: size }}
           className="rounded-full object-cover bg-slate-900 border border-white/10 shadow-sm"

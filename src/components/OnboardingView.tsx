@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ShieldCheck,
@@ -27,6 +27,8 @@ import {
   registerBiometricCredential,
 } from "@/lib/crypto/keystore";
 import { useWalletStore } from "@/store/useWalletStore";
+import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
+import { triggerHaptic } from "@/lib/ui/haptics";
 import { Address } from "viem";
 
 type OnboardingStep =
@@ -35,6 +37,17 @@ type OnboardingStep =
   | "create-quiz"
   | "import-secret"
   | "set-password";
+
+// Yields a browser frame before heavy crypto derivation so animations never stutter
+function yieldFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== "undefined") {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
 
 export default function OnboardingView() {
   const {
@@ -47,10 +60,13 @@ export default function OnboardingView() {
   } = useWalletStore();
 
   const [step, setStep] = useState<OnboardingStep>("landing");
+  const [preWarmedMnemonic, setPreWarmedMnemonic] = useState<string>("");
   const [mnemonic, setMnemonic] = useState<string>("");
   const [isBlurred, setIsBlurred] = useState<boolean>(true);
   const [selectedQuizWords, setSelectedQuizWords] = useState<string[]>([]);
-  const [importMode, setImportMode] = useState<"mnemonic" | "privateKey">("mnemonic");
+  const [importMode, setImportMode] = useState<"mnemonic" | "privateKey">(
+    "mnemonic"
+  );
   const [importInput, setImportInput] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [confirmPassword, setConfirmPassword] = useState<string>("");
@@ -59,33 +75,39 @@ export default function OnboardingView() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
+  // Pre-warm a fresh 12-word BIP-39 phrase in the background so "Create New Wallet" opens in 0ms
+  useEffect(() => {
+    setPreWarmedMnemonic(generateNewMnemonic());
+  }, []);
+
   const mnemonicWords = useMemo(
     () => (mnemonic ? mnemonic.split(" ") : []),
     [mnemonic]
   );
 
-  // Quiz indices: verify 3 specific positions (e.g., #3, #7, #11)
   const quizTargets = useMemo(() => [2, 6, 10], []);
   const shuffledQuizPool = useMemo(() => {
     if (!mnemonicWords.length) return [];
     return [...mnemonicWords].sort(() => Math.random() - 0.5);
   }, [mnemonicWords]);
 
-  // If keystore exists but is locked, show the Lock Screen
   if (keystore && !isUnlocked) {
     const handleUnlock = async (e: React.FormEvent) => {
       e.preventDefault();
       setError(null);
       setIsLoading(true);
+      await yieldFrame();
       try {
         const secret = await decryptKeystoreSecret(keystore, unlockPassword);
         const { privateKeyHex } =
           keystore.sourceType === "mnemonic"
             ? deriveAccountFromMnemonic(secret)
             : deriveAccountFromPrivateKey(secret);
+        triggerHaptic("success");
         unlockWithSessionKey(privateKeyHex);
         setUnlockPassword("");
       } catch (err: unknown) {
+        triggerHaptic("error");
         setError(err instanceof Error ? err.message : "Failed to unlock wallet");
       } finally {
         setIsLoading(false);
@@ -134,9 +156,13 @@ export default function OnboardingView() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 font-semibold text-sm hover:opacity-95 transition disabled:opacity-50"
+              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 font-semibold text-sm hover:opacity-95 transition disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {isLoading ? "Decrypting Vault (PBKDF2)..." : "Unlock Wallet"}
+              {isLoading ? (
+                <AetherWaveLoader size="sm" label="Unlocking Vault..." />
+              ) : (
+                "Unlock Wallet"
+              )}
             </button>
           </form>
         </motion.div>
@@ -145,8 +171,10 @@ export default function OnboardingView() {
   }
 
   const startCreateWallet = () => {
-    const phrase = generateNewMnemonic();
+    triggerHaptic("light");
+    const phrase = preWarmedMnemonic || generateNewMnemonic();
     setMnemonic(phrase);
+    setPreWarmedMnemonic(generateNewMnemonic());
     setIsBlurred(true);
     setSelectedQuizWords([]);
     setError(null);
@@ -155,6 +183,7 @@ export default function OnboardingView() {
 
   const handleQuizWordClick = (word: string) => {
     if (selectedQuizWords.length >= 3) return;
+    triggerHaptic("light");
     setSelectedQuizWords((prev) => [...prev, word]);
   };
 
@@ -165,10 +194,14 @@ export default function OnboardingView() {
       selectedQuizWords.every((w, i) => w === expected[i]);
 
     if (!isCorrect) {
-      setError("Word order does not match your recovery phrase. Please try again.");
+      triggerHaptic("error");
+      setError(
+        "Word order does not match your recovery phrase. Please try again."
+      );
       setSelectedQuizWords([]);
       return;
     }
+    triggerHaptic("success");
     setError(null);
     setStep("set-password");
   };
@@ -183,8 +216,10 @@ export default function OnboardingView() {
       } else {
         deriveAccountFromPrivateKey(importInput);
       }
+      triggerHaptic("success");
       setStep("set-password");
     } catch (err: unknown) {
+      triggerHaptic("error");
       setError(err instanceof Error ? err.message : "Invalid secret");
     }
   };
@@ -203,6 +238,9 @@ export default function OnboardingView() {
     }
 
     setIsLoading(true);
+    // Yield 1 animation frame so the AetherWaveLoader renders smoothly before crypto derivation
+    await yieldFrame();
+
     try {
       const isMnemonicFlow = mnemonic.length > 0 || importMode === "mnemonic";
       const rawSecret = mnemonic.length > 0 ? mnemonic : importInput.trim();
@@ -223,14 +261,15 @@ export default function OnboardingView() {
         setBiometricCredentialId(credId);
       }
 
-      // Clear transient state before initializing unlocked store
       setMnemonic("");
       setImportInput("");
       setPassword("");
       setConfirmPassword("");
 
+      triggerHaptic("success");
       setVaultInitialized(encrypted, privateKeyHex);
     } catch (err: unknown) {
+      triggerHaptic("error");
       setError(err instanceof Error ? err.message : "Encryption failed");
     } finally {
       setIsLoading(false);
@@ -240,7 +279,13 @@ export default function OnboardingView() {
   const connectInjectedOrWC = async () => {
     setError(null);
     try {
-      const eth = (window as unknown as { ethereum?: { request: (args: { method: string }) => Promise<string[]> } }).ethereum;
+      const eth = (
+        window as unknown as {
+          ethereum?: {
+            request: (args: { method: string }) => Promise<string[]>;
+          };
+        }
+      ).ethereum;
       if (eth) {
         const accounts = await eth.request({ method: "eth_requestAccounts" });
         if (accounts && accounts[0]) {
@@ -249,7 +294,7 @@ export default function OnboardingView() {
         }
       }
       setError(
-        "No injected wallet detected. Use Create or Import Wallet to test full non-custodial signing immediately."
+        "No browser extension detected. Use Create or Import Wallet to launch immediately."
       );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Connection rejected");
@@ -263,9 +308,10 @@ export default function OnboardingView() {
           {step === "landing" && (
             <motion.div
               key="landing"
-              initial={{ opacity: 0, y: 16 }}
+              initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -16 }}
+              exit={{ opacity: 0, y: -12 }}
+              transition={{ duration: 0.16 }}
               className="p-6 rounded-3xl bg-vault-card border border-vault-border backdrop-blur-xl shadow-2xl space-y-6"
             >
               <div className="text-center space-y-2 pt-2">
@@ -276,7 +322,8 @@ export default function OnboardingView() {
                   AetherVault
                 </h1>
                 <p className="text-sm text-slate-400">
-                  Self-custodial multi-chain DeFi wallet with real-time tx simulation & GoPlus threat defense.
+                  Self-custodial multi-chain DeFi wallet with instant swaps,
+                  built-in Faucet Gateway & QIE / BTC / SOL pairs.
                 </p>
               </div>
 
@@ -291,7 +338,7 @@ export default function OnboardingView() {
                     <div className="text-left">
                       <div className="text-sm font-bold">Create New Wallet</div>
                       <div className="text-xs text-indigo-200">
-                        Generate 12-word BIP39 phrase
+                        Instant 12-word BIP39 vault
                       </div>
                     </div>
                   </div>
@@ -310,7 +357,9 @@ export default function OnboardingView() {
                   <div className="flex items-center gap-3">
                     <KeyRound className="w-5 h-5 text-emerald-400" />
                     <div className="text-left">
-                      <div className="text-sm font-bold">Import Existing Wallet</div>
+                      <div className="text-sm font-bold">
+                        Import Existing Wallet
+                      </div>
                       <div className="text-xs text-slate-400">
                         Seed phrase or raw private key
                       </div>
@@ -326,9 +375,11 @@ export default function OnboardingView() {
                   <div className="flex items-center gap-3">
                     <Wallet className="w-5 h-5 text-amber-400" />
                     <div className="text-left">
-                      <div className="text-sm font-bold">Connect Existing Wallet</div>
+                      <div className="text-sm font-bold">
+                        Connect Existing Wallet
+                      </div>
                       <div className="text-xs text-slate-400">
-                        Browser Extension / WalletConnect v2
+                        Browser Extension / Web3
                       </div>
                     </div>
                   </div>
@@ -347,9 +398,10 @@ export default function OnboardingView() {
           {step === "create-reveal" && (
             <motion.div
               key="create-reveal"
-              initial={{ opacity: 0, x: 24 }}
+              initial={{ opacity: 0, x: 16 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -24 }}
+              exit={{ opacity: 0, x: -16 }}
+              transition={{ duration: 0.15 }}
               className="p-6 rounded-3xl bg-vault-card border border-vault-border backdrop-blur-xl space-y-5"
             >
               <button
@@ -362,14 +414,15 @@ export default function OnboardingView() {
               <div>
                 <h2 className="text-xl font-bold">Secret Recovery Phrase</h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  Write down these 12 words in exact order. We never transmit or store this phrase in plaintext.
+                  Write down these 12 words in exact order. We never store or
+                  transmit your phrase in plaintext.
                 </p>
               </div>
 
               <div className="relative">
                 <div
                   data-testid="mnemonic-grid"
-                  className={`grid grid-cols-3 gap-2.5 p-4 rounded-2xl bg-slate-950/90 border border-slate-800 transition duration-300 ${
+                  className={`grid grid-cols-3 gap-2.5 p-4 rounded-2xl bg-slate-950/90 border border-slate-800 transition duration-200 ${
                     isBlurred ? "blur-md select-none" : ""
                   }`}
                 >
@@ -402,7 +455,11 @@ export default function OnboardingView() {
                   onClick={() => setIsBlurred((b) => !b)}
                   className="text-xs text-slate-400 flex items-center gap-1 hover:text-white"
                 >
-                  {isBlurred ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                  {isBlurred ? (
+                    <Eye className="w-3.5 h-3.5" />
+                  ) : (
+                    <EyeOff className="w-3.5 h-3.5" />
+                  )}
                   {isBlurred ? "Show Phrase" : "Hide Phrase"}
                 </button>
               </div>
@@ -421,9 +478,10 @@ export default function OnboardingView() {
           {step === "create-quiz" && (
             <motion.div
               key="create-quiz"
-              initial={{ opacity: 0, x: 24 }}
+              initial={{ opacity: 0, x: 16 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -24 }}
+              exit={{ opacity: 0, x: -16 }}
+              transition={{ duration: 0.15 }}
               className="p-6 rounded-3xl bg-vault-card border border-vault-border backdrop-blur-xl space-y-5"
             >
               <button
@@ -438,7 +496,8 @@ export default function OnboardingView() {
                 <p className="text-xs text-slate-400 mt-1">
                   Select words{" "}
                   <span className="text-indigo-400 font-bold">
-                    #{quizTargets[0] + 1}, #{quizTargets[1] + 1}, and #{quizTargets[2] + 1}
+                    #{quizTargets[0] + 1}, #{quizTargets[1] + 1}, and #
+                    {quizTargets[2] + 1}
                   </span>{" "}
                   in order to verify your backup.
                 </p>
@@ -450,7 +509,9 @@ export default function OnboardingView() {
                     key={targetIdx}
                     className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-center"
                   >
-                    <div className="text-[10px] text-slate-500">Word #{targetIdx + 1}</div>
+                    <div className="text-[10px] text-slate-500">
+                      Word #{targetIdx + 1}
+                    </div>
                     <div className="font-bold text-indigo-300 mt-0.5">
                       {selectedQuizWords[slot] || "—"}
                     </div>
@@ -495,9 +556,10 @@ export default function OnboardingView() {
           {step === "import-secret" && (
             <motion.div
               key="import-secret"
-              initial={{ opacity: 0, x: 24 }}
+              initial={{ opacity: 0, x: 16 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -24 }}
+              exit={{ opacity: 0, x: -16 }}
+              transition={{ duration: 0.15 }}
               className="p-6 rounded-3xl bg-vault-card border border-vault-border backdrop-blur-xl space-y-5"
             >
               <button
@@ -510,7 +572,8 @@ export default function OnboardingView() {
               <div>
                 <h2 className="text-xl font-bold">Import Wallet</h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  Enter your 12-word recovery phrase or 64-character hex private key.
+                  Enter your 12-word recovery phrase or 64-character hex private
+                  key.
                 </p>
               </div>
 
@@ -566,15 +629,16 @@ export default function OnboardingView() {
             <motion.form
               key="set-password"
               onSubmit={finalizeVaultCreation}
-              initial={{ opacity: 0, x: 24 }}
+              initial={{ opacity: 0, x: 16 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -24 }}
+              exit={{ opacity: 0, x: -16 }}
+              transition={{ duration: 0.15 }}
               className="p-6 rounded-3xl bg-vault-card border border-vault-border backdrop-blur-xl space-y-4"
             >
               <div>
                 <h2 className="text-xl font-bold">Encrypt Your Keystore</h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  Protected with WebCrypto PBKDF2 (310,000 iterations) + AES-256-GCM.
+                  Hardware-accelerated WebCrypto AES-256-GCM encryption.
                 </p>
               </div>
 
@@ -610,7 +674,9 @@ export default function OnboardingView() {
                 <div className="flex items-center gap-2.5">
                   <Fingerprint className="w-5 h-5 text-emerald-400" />
                   <div>
-                    <div className="text-xs font-semibold">Biometric / Passkey Unlock</div>
+                    <div className="text-xs font-semibold">
+                      Biometric / Passkey Unlock
+                    </div>
                     <div className="text-[11px] text-slate-400">
                       Bind device WebAuthn authenticator
                     </div>
@@ -632,8 +698,17 @@ export default function OnboardingView() {
                 disabled={isLoading}
                 className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-emerald-600 font-semibold text-sm flex items-center justify-center gap-2"
               >
-                <CheckCircle2 className="w-4 h-4" />
-                {isLoading ? "Encrypting Keystore..." : "Encrypt & Launch Wallet"}
+                {isLoading ? (
+                  <AetherWaveLoader
+                    size="sm"
+                    label="Initializing AetherVault..."
+                  />
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Encrypt & Launch Wallet</span>
+                  </>
+                )}
               </button>
             </motion.form>
           )}
@@ -642,12 +717,3 @@ export default function OnboardingView() {
     </div>
   );
 }
-
-/**
- * STAGE 2 VERIFICATION CHECKLIST:
- * 1. Click "Create New Wallet", verify 12 BIP-39 words are blurred until "Tap to Reveal" is clicked.
- * 2. Complete the 3-word confirmation quiz and set an 8+ character password.
- * 3. Open DevTools -> Application -> Local Storage (`aethervault-storage-v1`) and verify:
- *    - `keystore.ciphertext`, `keystore.salt`, and `keystore.iv` are Base64 encoded.
- *    - NO plaintext mnemonic or `sessionPrivateKey` exists anywhere in LocalStorage or console logs.
- */

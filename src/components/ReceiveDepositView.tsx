@@ -25,17 +25,22 @@ const FAUCET_DRIP_PRESETS: Array<{
   label: string;
 }> = [
   { symbol: "ETH", amount: "0.5", label: "0.5 Sepolia ETH" },
-  { symbol: "USDC", amount: "100", label: "100 USDC" },
+  { symbol: "QIE", amount: "1000", label: "1,000 QIE" },
   { symbol: "USDT", amount: "100", label: "100 USDT" },
+  { symbol: "USDC", amount: "100", label: "100 USDC" },
   { symbol: "BTC", amount: "0.01", label: "0.01 BTC" },
   { symbol: "SOL", amount: "2", label: "2 SOL" },
-  { symbol: "QIE", amount: "500", label: "500 QIE" },
 ];
 
 const EXTERNAL_WEB_FAUCETS = [
   {
+    name: "Official QIE Blockchain Testnet Faucet",
+    drip: "Claim Native QIE Test Tokens",
+    url: "https://www.qie.digital/faucet",
+  },
+  {
     name: "Google Cloud Web3 Sepolia Faucet",
-    drip: "0.05 Sepolia ETH / day (No Mainnet Balance)",
+    drip: "0.05 Sepolia ETH / day (Zero Mainnet Balance)",
     url: "https://cloud.google.com/application/web3/faucet/ethereum/sepolia",
   },
   {
@@ -47,11 +52,6 @@ const EXTERNAL_WEB_FAUCETS = [
     name: "Circle Official USDC Sepolia Faucet",
     drip: "10 Sepolia USDC / hour",
     url: "https://faucet.circle.com/",
-  },
-  {
-    name: "QuickNode Multi-Chain Sepolia Faucet",
-    drip: "0.05 Sepolia ETH / 12h",
-    url: "https://faucet.quicknode.com/ethereum/sepolia",
   },
 ];
 
@@ -230,7 +230,7 @@ export default function ReceiveDepositView({
           }`}
         >
           <Droplets className="w-3.5 h-3.5" />
-          <span>Sepolia Faucet</span>
+          <span>Faucet Gateway</span>
         </button>
       </div>
 
@@ -292,7 +292,7 @@ export default function ReceiveDepositView({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm font-bold">
                 <Droplets className="w-5 h-5 text-indigo-400" />
-                <span>Sepolia Testnet Faucet Gateway</span>
+                <span>Testnet Faucet Gateway</span>
               </div>
               <button
                 type="button"
@@ -304,13 +304,13 @@ export default function ReceiveDepositView({
             </div>
 
             <p className="text-xs text-slate-400">
-              Collect instant Sepolia ETH, USDC, BTC, SOL, or QIE to test swaps
-              and transfers immediately.
+              Collect instant Sepolia ETH, QIE Blockchain (QIE), USDT, USDC, BTC,
+              or SOL to test swaps (`QIE/USDT`, `BTC/USD`, `SOL/USD`) and transfers.
             </p>
 
             <div>
               <label className="text-xs text-slate-400 block mb-1.5">
-                Select Testnet Asset to Collect
+                Select Asset to Collect
               </label>
               <div className="grid grid-cols-3 gap-2">
                 {FAUCET_DRIP_PRESETS.map((item, idx) => {
@@ -388,7 +388,7 @@ export default function ReceiveDepositView({
 
           <div className="p-4 rounded-3xl bg-vault-card border border-vault-border space-y-2.5">
             <div className="text-xs font-bold text-slate-300">
-              External Sepolia Web Faucets (Auto-Copies Your Address on Click)
+              Official Web Faucets (Auto-Copies Your Address on Click)
             </div>
             <div className="space-y-2">
               {EXTERNAL_WEB_FAUCETS.map((faucet) => (

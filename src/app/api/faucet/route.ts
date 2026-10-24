@@ -10,7 +10,7 @@ export async function POST(request: Request) {
 
     if (!address || !isAddress(address)) {
       return NextResponse.json(
-        { error: "Please enter a valid 0x Ethereum/Sepolia address." },
+        { error: "Please enter a valid 0x wallet address." },
         { status: 400 }
       );
     }
@@ -71,4 +71,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

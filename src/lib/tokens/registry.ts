@@ -8,16 +8,31 @@ const ERC20_METADATA_ABI = parseAbi([
   "function decimals() view returns (uint8)",
 ]);
 
+// Official CoinMarketCap Icon for QIE Blockchain (https://coinmarketcap.com/currencies/qi-blockchain/ -> UCID 21988)
+export const OFFICIAL_QIE_CMC_LOGO =
+  "https://s2.coinmarketcap.com/static/img/coins/64x64/21988.png";
+
 export const EXPANDED_CATALOG: TokenAsset[] = [
-  // Sepolia Testnet BTC, SOL & QIE Pairs (Supports BTC/USD, SOL/USD, QIE/USDT)
+  // Sepolia Testnet Featured Pairs: QIE/USDT, BTC/USD, SOL/USD
+  {
+    chainId: 11155111,
+    address: "0x91E000000000000000000000000000000000091E",
+    symbol: "QIE",
+    name: "QIE Blockchain",
+    decimals: 18,
+    coingeckoId: "qi-blockchain",
+    binanceSymbol: "QIEUSDT",
+    logoURI: OFFICIAL_QIE_CMC_LOGO,
+  },
   {
     chainId: 11155111,
     address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
     symbol: "BTC",
     name: "Bitcoin",
     decimals: 8,
+    coingeckoId: "bitcoin",
     binanceSymbol: "BTCUSDT",
-    logoURI: "https://assets.coincap.io/assets/icons/btc@2x.png",
+    logoURI: "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png",
   },
   {
     chainId: 11155111,
@@ -25,19 +40,20 @@ export const EXPANDED_CATALOG: TokenAsset[] = [
     symbol: "SOL",
     name: "Solana",
     decimals: 9,
+    coingeckoId: "solana",
     binanceSymbol: "SOLUSDT",
-    logoURI: "https://assets.coincap.io/assets/icons/sol@2x.png",
+    logoURI: "https://s2.coinmarketcap.com/static/img/coins/64x64/5426.png",
   },
   {
     chainId: 11155111,
-    address: "0x91E000000000000000000000000000000000091E",
-    symbol: "QIE",
-    name: "QIE Blockchain",
-    decimals: 18,
-    binanceSymbol: "QIEUSDT",
+    address: "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0",
+    symbol: "USDT",
+    name: "Tether USD (Sepolia)",
+    decimals: 6,
+    binanceSymbol: "USDCUSDT",
+    logoURI: "https://s2.coinmarketcap.com/static/img/coins/64x64/825.png",
   },
   ...DEFAULT_TOKENS,
-  // Sepolia Testnet Complete Suite
   {
     chainId: 11155111,
     address: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
@@ -62,57 +78,37 @@ export const EXPANDED_CATALOG: TokenAsset[] = [
     decimals: 18,
     binanceSymbol: "USDCUSDT",
   },
-  {
-    chainId: 11155111,
-    address: "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0",
-    symbol: "USDT",
-    name: "Tether USD (Sepolia)",
-    decimals: 6,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 11155111,
-    address: "0x08210F9170F89Ab7658F0B5E3fF39b0E03C594D4",
-    symbol: "EURC",
-    name: "Euro Coin (Sepolia)",
-    decimals: 6,
-    binanceSymbol: "USDCUSDT",
-  },
-  {
-    chainId: 11155111,
-    address: "0x29f2D40B0605204364af54EC677bD022dA425d03",
-    symbol: "WBTC",
-    name: "Wrapped BTC (Sepolia)",
-    decimals: 8,
-    binanceSymbol: "BTCUSDT",
-  },
 
-  // Ethereum Mainnet BTC, SOL, QIE & Blue-Chips
-  {
-    chainId: 1,
-    address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
-    symbol: "BTC",
-    name: "Bitcoin (Wrapped)",
-    decimals: 8,
-    binanceSymbol: "BTCUSDT",
-    logoURI: "https://assets.coincap.io/assets/icons/btc@2x.png",
-  },
-  {
-    chainId: 1,
-    address: "0xD31a59c85aE9D8edEFeC411D448f90841571b89c",
-    symbol: "SOL",
-    name: "Solana (Wormhole)",
-    decimals: 9,
-    binanceSymbol: "SOLUSDT",
-    logoURI: "https://assets.coincap.io/assets/icons/sol@2x.png",
-  },
+  // Ethereum Mainnet QIE Blockchain, BTC, SOL & Blue-Chips
   {
     chainId: 1,
     address: "0x91E000000000000000000000000000000000091E",
     symbol: "QIE",
     name: "QIE Blockchain",
     decimals: 18,
+    coingeckoId: "qi-blockchain",
     binanceSymbol: "QIEUSDT",
+    logoURI: OFFICIAL_QIE_CMC_LOGO,
+  },
+  {
+    chainId: 1,
+    address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+    symbol: "BTC",
+    name: "Bitcoin",
+    decimals: 8,
+    coingeckoId: "bitcoin",
+    binanceSymbol: "BTCUSDT",
+    logoURI: "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png",
+  },
+  {
+    chainId: 1,
+    address: "0xD31a59c85aE9D8edEFeC411D448f90841571b89c",
+    symbol: "SOL",
+    name: "Solana",
+    decimals: 9,
+    coingeckoId: "solana",
+    binanceSymbol: "SOLUSDT",
+    logoURI: "https://s2.coinmarketcap.com/static/img/coins/64x64/5426.png",
   },
   {
     chainId: 1,
@@ -138,14 +134,6 @@ export const EXPANDED_CATALOG: TokenAsset[] = [
     decimals: 18,
     binanceSymbol: "LINKUSDT",
   },
-  {
-    chainId: 1,
-    address: "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9",
-    symbol: "AAVE",
-    name: "Aave Token",
-    decimals: 18,
-    binanceSymbol: "AAVEUSDT",
-  },
 ];
 
 const remoteListCache = new Map<SupportedChainId, TokenAsset[]>();
@@ -157,6 +145,7 @@ export async function fetchUniversalTokenList(
     EXPANDED_CATALOG.filter((t) => t.chainId === chainId)
   );
 
+  // Return local catalog immediately on Sepolia so onboarding & dashboard load in 0ms
   if (chainId === 11155111) {
     return localForChain;
   }
@@ -172,7 +161,7 @@ export async function fetchUniversalTokenList(
     const rawList = data?.tokens?.[String(chainId)] || [];
 
     const mapped: TokenAsset[] = rawList
-      .slice(0, 150)
+      .slice(0, 80)
       .map(
         (item: {
           address: string;
@@ -247,7 +236,7 @@ export async function resolveOnChainERC20Token(
 function deduplicateTokens(tokens: TokenAsset[]): TokenAsset[] {
   const seen = new Set<string>();
   return tokens.filter((t) => {
-    const key = `${t.chainId}:${t.symbol.toUpperCase()}:${t.address.toLowerCase()}`;
+    const key = `${t.chainId}:${t.symbol.toUpperCase()}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
