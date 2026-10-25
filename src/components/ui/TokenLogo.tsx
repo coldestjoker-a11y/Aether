@@ -13,6 +13,7 @@ const TRUSTWALLET_CHAIN_SLUG: Record<SupportedChainId, string> = {
   42161: "arbitrum",
   8453: "base",
   10: "optimism",
+  5656: "qie",
 };
 
 // High-Resolution Official CoinMarketCap Icons (including QIE Blockchain UCID #21988)

@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { formatUnits, maxUint256, parseUnits } from "viem";
 import { useWalletStore } from "@/store/useWalletStore";
-import { getResilientPublicClient } from "@/lib/chains/config";
+import { CHAIN_METADATA, getResilientPublicClient } from "@/lib/chains/config";
 import { fetchSwapQuote, ExtendedSwapQuote } from "@/lib/swap/aggregator";
 import { auditTokenSecurity } from "@/lib/security/scanner";
 import {
@@ -229,6 +229,8 @@ export default function SwapView() {
     triggerHaptic("medium");
 
     try {
+      const isTestnet = CHAIN_METADATA[activeChainId].isTestnet;
+
       const sim = await simulateAndEstimateTransaction({
         chainId: activeChainId,
         from: activeAddress,
@@ -238,10 +240,19 @@ export default function SwapView() {
         customRpc: customRpcs[activeChainId],
       });
 
-      // If an external router call reverted during simulation, seamlessly fall back
-      // to a 0-ETH self-checkpoint transaction so the swap still executes and settles cleanly!
+      // STRICT MAINNET PROTECTION: Never allow a reverting swap to broadcast on Mainnet
+      if (!isTestnet && !sim.simulationSuccess) {
+        setTxError(
+          sim.revertReason ||
+            "Mainnet Swap Simulation Reverted: Check token allowance, balance, or increase slippage."
+        );
+        setIsSwapping(false);
+        return;
+      }
+
       const useFallbackCheckpoint =
-        !sim.simulationSuccess || Boolean(quote.isSimulatedRouterCalldata);
+        isTestnet &&
+        (!sim.simulationSuccess || Boolean(quote.isSimulatedRouterCalldata));
 
       const targetTo = useFallbackCheckpoint ? activeAddress : quote.to;
       const targetValue = useFallbackCheckpoint ? 0n : BigInt(quote.value);

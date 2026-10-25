@@ -1,6 +1,7 @@
 import { Address, Hex } from "viem";
 
-export type SupportedChainId = 11155111 | 1 | 56 | 137 | 42161 | 8453 | 10;
+// 1 = Ethereum, 42161 = Arbitrum, 8453 = Base, 10 = Optimism, 137 = Polygon, 56 = BSC, 5656 = QIE Mainnet, 11155111 = Sepolia
+export type SupportedChainId = 1 | 42161 | 8453 | 10 | 137 | 56 | 5656 | 11155111;
 
 export interface EncryptedKeystore {
   version: 1;

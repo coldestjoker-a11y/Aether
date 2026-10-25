@@ -15,11 +15,12 @@ const cspHeader = `
     connect-src 'self'
       https://*.alchemy.com wss://*.alchemy.com
       https://*.infura.io wss://*.infura.io
-      https://*.publicnode.com
+      https://*.publicnode.com wss://*.publicnode.com
       https://rpc.sepolia.org
       https://1rpc.io
-      https://*.qie.digital
-      https://api.0x.org https://sepolia.api.0x.org
+      https://*.qie.digital wss://*.qie.digital
+      https://*.qiblockchain.online wss://*.qiblockchain.online
+      https://api.0x.org https://*.api.0x.org
       https://li.quest
       https://api.gopluslabs.io
       https://api.coingecko.com

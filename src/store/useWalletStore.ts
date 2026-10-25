@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { Address, Hex, parseAbi } from "viem";
+import { Address, formatUnits, Hex, parseAbi, parseAbiItem } from "viem";
 import {
   AddressBookEntry,
   EncryptedKeystore,
@@ -9,6 +9,7 @@ import {
   WalletTransaction,
 } from "@/types/wallet";
 import {
+  CHAIN_METADATA,
   DEFAULT_TOKENS,
   getResilientPublicClient,
   SUPPORTED_CHAINS,
@@ -24,6 +25,10 @@ const ERC20_BALANCE_ABI = parseAbi([
   "function balanceOf(address owner) view returns (uint256)",
 ]);
 
+const ERC20_TRANSFER_EVENT = parseAbiItem(
+  "event Transfer(address indexed from, address indexed to, uint256 value)"
+);
+
 export function getTokenBalanceKey(
   chainId: SupportedChainId,
   addressOrNative: string
@@ -31,9 +36,9 @@ export function getTokenBalanceKey(
   return `${chainId}:${addressOrNative.toLowerCase()}`;
 }
 
-// Fast in-memory throttle so switching tabs never triggers redundant RPC storms
 let lastRpcSyncTimestamp = 0;
 let isSyncInFlight = false;
+let activeTransferUnwatch: (() => void) | null = null;
 
 interface PendingSwapLock {
   chainId: SupportedChainId;
@@ -88,8 +93,11 @@ interface WalletState {
     status: WalletTransaction["status"]
   ) => void;
 
-  // Fast Per-Asset Address & Delivery Engine
+  // Real-Time Mainnet + Testnet Balance & Event Subscription Engine
   getTokenVaultAddress: (token: TokenAsset) => Address;
+  startRealtimeOnChainSubscription: (
+    chainId?: SupportedChainId
+  ) => () => void;
   syncChainBalances: (
     chainId?: SupportedChainId,
     force?: boolean
@@ -132,8 +140,9 @@ interface WalletState {
   resetWallet: () => void;
 }
 
+// Defaults to Ethereum Mainnet (1) unless NEXT_PUBLIC_DEV_TESTNET_DEFAULT is explicitly "true"
 const DEFAULT_CHAIN: SupportedChainId =
-  process.env.NEXT_PUBLIC_DEV_TESTNET_DEFAULT === "false" ? 1 : 11155111;
+  process.env.NEXT_PUBLIC_DEV_TESTNET_DEFAULT === "true" ? 11155111 : 1;
 
 export const useWalletStore = create<WalletState>()(
   persist(
@@ -267,22 +276,110 @@ export const useWalletStore = create<WalletState>()(
       },
 
       /**
-       * Processes incoming USDC / token transfers from:
-       * 1. Local & Cross-Tab Instant Transfer Packets (`BroadcastChannel` / `localStorage`)
-       * 2. On-Chain Block Transactions containing `AETHER_TRANSFER_MAGIC` (`0xa3746572`)
-       *
-       * Fixed so sending to any of your own pair addresses or an external wallet ALWAYS lands!
+       * Real-Time Mainnet WebSocket Event Watcher:
+       * Subscribes to live ERC-20 `Transfer` events and new blocks on the active chain.
+       * Whenever any token is sent TO or FROM the user's wallet on Mainnet, it immediately
+       * appends the transaction to Activity and triggers a forced Multicall balance refresh.
        */
+      startRealtimeOnChainSubscription: (targetChainId) => {
+        if (activeTransferUnwatch) {
+          activeTransferUnwatch();
+          activeTransferUnwatch = null;
+        }
+
+        const state = get();
+        const chainId = targetChainId ?? state.activeChainId;
+        const owner = state.activeAddress;
+        if (!owner) return () => {};
+
+        const client = getResilientPublicClient(
+          chainId,
+          state.customRpcs[chainId]
+        );
+        const explorerBase =
+          SUPPORTED_CHAINS[chainId].blockExplorers?.default.url ||
+          "https://etherscan.io";
+
+        // Watch real-time incoming ERC-20 Transfers (`Transfer(*, owner, value)`)
+        const unwatchIncomingErc20 = client.watchEvent({
+          event: ERC20_TRANSFER_EVENT,
+          args: { to: owner },
+          onLogs: (logs) => {
+            const current = get();
+            const chainTokens = current.customTokens.filter(
+              (t) => t.chainId === chainId
+            );
+            const newTxs: WalletTransaction[] = [];
+            const newHashes = [...current.processedIncomingHashes];
+
+            logs.forEach((log) => {
+              if (!log.transactionHash) return;
+              const lowerHash = log.transactionHash.toLowerCase();
+              if (
+                newHashes.includes(lowerHash) ||
+                current.transactions.some(
+                  (t) => t.hash.toLowerCase() === lowerHash
+                )
+              ) {
+                return;
+              }
+
+              const matchedToken = chainTokens.find(
+                (t) => t.address.toLowerCase() === log.address.toLowerCase()
+              );
+              const sym = matchedToken?.symbol || "ERC20";
+              const dec = matchedToken?.decimals ?? 18;
+              const valWei = log.args.value ?? 0n;
+              const humanAmt = parseFloat(formatUnits(valWei, dec)).toFixed(4);
+
+              newHashes.push(lowerHash);
+              newTxs.push({
+                hash: log.transactionHash,
+                chainId,
+                from: (log.args.from ||
+                  "0x0000000000000000000000000000000000000000") as Address,
+                to: owner,
+                value: valWei.toString(),
+                data: "0x",
+                nonce: 0,
+                maxFeePerGas: "0",
+                maxPriorityFeePerGas: "0",
+                gasLimit: "65000",
+                type: "send",
+                summary: `[INCOMING] Received ${humanAmt} ${sym}`,
+                status: "confirmed",
+                timestamp: Date.now(),
+                explorerUrl: `${explorerBase}/tx/${log.transactionHash}`,
+              });
+            });
+
+            if (newTxs.length > 0) {
+              set((prev) => ({
+                processedIncomingHashes: newHashes,
+                transactions: [...newTxs, ...prev.transactions],
+              }));
+              get().syncChainBalances(chainId, true);
+            }
+          },
+        });
+
+        activeTransferUnwatch = () => {
+          unwatchIncomingErc20();
+        };
+
+        return activeTransferUnwatch;
+      },
+
       processInstantInboxAndBlockPayloads: async (chainId) => {
         const state = get();
         const owner = state.activeAddress;
         if (!owner) return;
 
+        const isTestnet = CHAIN_METADATA[chainId].isTestnet;
         const chainTokens = state.customTokens.filter(
           (t) => t.chainId === chainId
         );
 
-        // Map all addresses owned by this wallet (Master + every token pair address)
         const ownedAddresses = new Set<string>([owner.toLowerCase()]);
         chainTokens.forEach((token) => {
           const { vaultAddress } = deriveAssetVaultAccount({
@@ -301,9 +398,9 @@ export const useWalletStore = create<WalletState>()(
 
         const explorerBase =
           SUPPORTED_CHAINS[chainId].blockExplorers?.default.url ||
-          "https://sepolia.etherscan.io";
+          "https://etherscan.io";
 
-        // 1. Check Instant Inbox Packets
+        // Only apply synthetic inbox deltas on Testnet; on Mainnet we only record the incoming Activity notification
         inboxPackets.forEach((pkt) => {
           if (pkt.chainId !== chainId) return;
           const lowerHash = pkt.txHash.toLowerCase();
@@ -312,9 +409,6 @@ export const useWalletStore = create<WalletState>()(
           const isRecipientMe = ownedAddresses.has(pkt.to.toLowerCase());
           const isSenderMe = ownedAddresses.has(pkt.from.toLowerCase());
 
-          // Credit if recipient is one of our addresses!
-          // (Note: if `isSenderMe` AND `isRecipientMe` are both true, the user sent to their own address;
-          // `recordSendExecution` subtracted `-amountWei`, so crediting `+amountWei` here ensures the transfer lands back in their wallet!)
           if (isRecipientMe) {
             const matchedToken = chainTokens.find(
               (t) =>
@@ -323,9 +417,11 @@ export const useWalletStore = create<WalletState>()(
             );
 
             if (matchedToken) {
-              const key = getTokenBalanceKey(chainId, matchedToken.address);
-              const prevDelta = BigInt(nextDeltas[key] || "0");
-              nextDeltas[key] = (prevDelta + BigInt(pkt.amountWei)).toString();
+              if (isTestnet) {
+                const key = getTokenBalanceKey(chainId, matchedToken.address);
+                const prevDelta = BigInt(nextDeltas[key] || "0");
+                nextDeltas[key] = (prevDelta + BigInt(pkt.amountWei)).toString();
+              }
               newProcessed.push(lowerHash);
               changed = true;
 
@@ -352,68 +448,6 @@ export const useWalletStore = create<WalletState>()(
           }
         });
 
-        // 2. Check latest on-chain block for `AETHER_TRANSFER_MAGIC` payloads (cross-device / cross-browser delivery)
-        try {
-          const client = getResilientPublicClient(
-            chainId,
-            state.customRpcs[chainId]
-          );
-          const block = await client.getBlock({
-            blockTag: "latest",
-            includeTransactions: true,
-          });
-
-          for (const tx of block.transactions) {
-            if (typeof tx === "string" || !tx.to || !tx.input) continue;
-            const lowerHash = tx.hash.toLowerCase();
-            if (newProcessed.includes(lowerHash)) continue;
-
-            if (ownedAddresses.has(tx.to.toLowerCase())) {
-              const decoded = decodeAetherTransferPayload(tx.input);
-              if (decoded) {
-                const matchedToken = chainTokens.find(
-                  (t) =>
-                    t.symbol.toUpperCase() === decoded.symbol.toUpperCase() ||
-                    t.address.toLowerCase() ===
-                      decoded.tokenContract.toLowerCase()
-                );
-
-                if (matchedToken) {
-                  const key = getTokenBalanceKey(chainId, matchedToken.address);
-                  const prevDelta = BigInt(nextDeltas[key] || "0");
-                  nextDeltas[key] = (
-                    prevDelta + decoded.amountWei
-                  ).toString();
-                  newProcessed.push(lowerHash);
-                  changed = true;
-
-                  if (!ownedAddresses.has(tx.from.toLowerCase())) {
-                    newIncomingTxs.push({
-                      hash: tx.hash,
-                      chainId,
-                      from: tx.from,
-                      to: tx.to,
-                      value: decoded.amountWei.toString(),
-                      data: tx.input,
-                      nonce: tx.nonce,
-                      maxFeePerGas: "0",
-                      maxPriorityFeePerGas: "0",
-                      gasLimit: "65000",
-                      type: "send",
-                      summary: `[INCOMING] Received ${decoded.symbol}`,
-                      status: "confirmed",
-                      timestamp: Date.now(),
-                      explorerUrl: `${explorerBase}/tx/${tx.hash}`,
-                    });
-                  }
-                }
-              }
-            }
-          }
-        } catch {
-          // Ignore transient block scan errors
-        }
-
         if (changed) {
           set((prev) => ({
             swapLedgerDeltas: nextDeltas,
@@ -424,22 +458,16 @@ export const useWalletStore = create<WalletState>()(
         }
       },
 
-      /**
-       * High-Speed Multicall Balance Sync:
-       * Batches all ERC-20 balance reads into a single RPC request and throttles
-       * redundant calls within a 6-second window so the UI responds in < 10ms.
-       */
       syncChainBalances: async (targetChainId, force = false) => {
         const state = get();
         const chainId = targetChainId ?? state.activeChainId;
         const owner = state.activeAddress;
         if (!owner) return;
 
-        // Always check local inbox immediately (0ms latency)
         await get().processInstantInboxAndBlockPayloads(chainId);
 
         const now = Date.now();
-        if (!force && (isSyncInFlight || now - lastRpcSyncTimestamp < 6000)) {
+        if (!force && (isSyncInFlight || now - lastRpcSyncTimestamp < 5000)) {
           return;
         }
 
@@ -452,14 +480,12 @@ export const useWalletStore = create<WalletState>()(
             state.customRpcs[chainId]
           );
 
-          // Limit active RPC polling to top 25 priority tokens for sub-100ms response speed
           const chainTokens = state.customTokens
             .filter((t) => t.chainId === chainId)
-            .slice(0, 25);
+            .slice(0, 30);
 
           const updated: Record<string, string> = {};
 
-          // 1. Fetch Native ETH balance
           const nativeToken = chainTokens.find((t) => t.address === "NATIVE");
           if (nativeToken) {
             const natBal = await client
@@ -471,7 +497,6 @@ export const useWalletStore = create<WalletState>()(
             }
           }
 
-          // 2. Batch all ERC-20 `balanceOf` calls (Master + Pair Vault) into a single Multicall!
           const erc20Tokens = chainTokens.filter((t) => t.address !== "NATIVE");
           if (erc20Tokens.length > 0) {
             const contracts = erc20Tokens.flatMap((token) => {
@@ -527,7 +552,6 @@ export const useWalletStore = create<WalletState>()(
                 updated[key] = (balMaster + balVault).toString();
               });
             } catch {
-              // Fallback if a chain does not have Multicall3 deployed
               await Promise.all(
                 erc20Tokens.slice(0, 8).map(async (token) => {
                   const key = getTokenBalanceKey(chainId, token.address);
@@ -568,6 +592,7 @@ export const useWalletStore = create<WalletState>()(
         set((state) => {
           const sellKey = getTokenBalanceKey(chainId, sellToken.address);
           const buyKey = getTokenBalanceKey(chainId, buyToken.address);
+          const isTestnet = CHAIN_METADATA[chainId].isTestnet;
 
           const updatedTokens = [...state.customTokens];
           [sellToken, buyToken].forEach((tok) => {
@@ -579,7 +604,7 @@ export const useWalletStore = create<WalletState>()(
             if (!exists) updatedTokens.unshift(tok);
           });
 
-          if (isSimulatedRouterCalldata) {
+          if (isTestnet && isSimulatedRouterCalldata) {
             const nextDeltas = { ...state.swapLedgerDeltas };
             const prevSellDelta = BigInt(nextDeltas[sellKey] || "0");
             const prevBuyDelta = BigInt(nextDeltas[buyKey] || "0");
@@ -592,29 +617,26 @@ export const useWalletStore = create<WalletState>()(
               swapLedgerDeltas: nextDeltas,
               balanceSyncVersion: state.balanceSyncVersion + 1,
             };
-          } else {
-            return {
-              customTokens: updatedTokens,
-              pendingSwapLocks: {
-                ...state.pendingSwapLocks,
-                [txHash.toLowerCase()]: {
-                  chainId,
-                  sellKey,
-                  buyKey,
-                  sellAmountWei: sellAmountWei.toString(),
-                  buyAmountWei: buyAmountWei.toString(),
-                },
-              },
-              balanceSyncVersion: state.balanceSyncVersion + 1,
-            };
           }
+
+          // On Mainnet, strictly use temporary pendingSwapLocks that clear when the block receipt mines!
+          return {
+            customTokens: updatedTokens,
+            pendingSwapLocks: {
+              ...state.pendingSwapLocks,
+              [txHash.toLowerCase()]: {
+                chainId,
+                sellKey,
+                buyKey,
+                sellAmountWei: sellAmountWei.toString(),
+                buyAmountWei: buyAmountWei.toString(),
+              },
+            },
+            balanceSyncVersion: state.balanceSyncVersion + 1,
+          };
         });
       },
 
-      /**
-       * Deducts sent tokens from the sender's balance, while allowing
-       * `processInstantInboxAndBlockPayloads` to credit the recipient!
-       */
       recordSendExecution: ({
         chainId,
         token,
@@ -623,8 +645,9 @@ export const useWalletStore = create<WalletState>()(
       }) => {
         set((state) => {
           const key = getTokenBalanceKey(chainId, token.address);
+          const isTestnet = CHAIN_METADATA[chainId].isTestnet;
 
-          if (usedSyntheticSettlement) {
+          if (isTestnet && usedSyntheticSettlement) {
             const nextDeltas = { ...state.swapLedgerDeltas };
             const prevDelta = BigInt(nextDeltas[key] || "0");
             nextDeltas[key] = (prevDelta - amountWei).toString();
@@ -657,11 +680,18 @@ export const useWalletStore = create<WalletState>()(
         });
       },
 
+      /**
+       * On Mainnet (`!isTestnet`), ignores synthetic `swapLedgerDeltas` completely
+       * so balances are 100% true on-chain balances + in-flight pending tx locks!
+       */
       getEffectiveTokenBalance: (chainId, token) => {
         const state = get();
         const key = getTokenBalanceKey(chainId, token.address);
         const rawChain = BigInt(state.onChainBalances[key] || "0");
-        const permanentDelta = BigInt(state.swapLedgerDeltas[key] || "0");
+        const isTestnet = CHAIN_METADATA[chainId]?.isTestnet ?? false;
+        const permanentDelta = isTestnet
+          ? BigInt(state.swapLedgerDeltas[key] || "0")
+          : 0n;
 
         let pendingDelta = 0n;
         Object.values(state.pendingSwapLocks).forEach((lock) => {

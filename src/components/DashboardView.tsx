@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Repeat,
   Droplets,
+  Layers,
   TrendingUp,
   TrendingDown,
   Copy,
@@ -53,6 +54,7 @@ export default function DashboardView({ onNavigateTab }: Props) {
     customRpcs,
     currency,
     syncChainBalances,
+    startRealtimeOnChainSubscription,
     getEffectiveTokenBalance,
     getTokenVaultAddress,
     balanceSyncVersion,
@@ -130,17 +132,26 @@ export default function DashboardView({ onNavigateTab }: Props) {
   useEffect(() => {
     setIsLoadingBalances(true);
     fetchBalances(false);
+
+    // 1. Start real-time WSS ERC-20 Transfer log subscription
+    const unwatchTransfers = startRealtimeOnChainSubscription(activeChainId);
+
+    // 2. Watch new blocks for native ETH/BNB/POL/QIE balance updates
     const client = getResilientPublicClient(
       activeChainId,
       customRpcs[activeChainId]
     );
-    const unwatch = client.watchBlockNumber({
+    const unwatchBlocks = client.watchBlockNumber({
       onBlockNumber: () => {
         fetchBalances(false);
       },
-      pollingInterval: 10_000,
+      pollingInterval: 8_000,
     });
-    return () => unwatch();
+
+    return () => {
+      unwatchTransfers();
+      unwatchBlocks();
+    };
   }, [activeAddress, activeChainId, chainTokens.length]);
 
   const currencyMultiplier =
@@ -378,8 +389,8 @@ export default function DashboardView({ onNavigateTab }: Props) {
             {
               id: "deposit",
               testId: "quick-btn-deposit",
-              label: "Faucet",
-              icon: Droplets,
+              label: currentChainMeta.isTestnet ? "Faucet" : "Bridge",
+              icon: currentChainMeta.isTestnet ? Droplets : Layers,
               color: "text-cyan-400",
               bg: "group-hover:bg-cyan-500/20",
             },
