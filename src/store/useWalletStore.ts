@@ -106,13 +106,13 @@ interface WalletState {
     chainId: SupportedChainId
   ) => Promise<void>;
   recordSwapExecution: (params: {
-    txHash: Hex;
+    txHash?: Hex;
     chainId: SupportedChainId;
     sellToken: TokenAsset;
     buyToken: TokenAsset;
     sellAmountWei: bigint;
     buyAmountWei: bigint;
-    isSimulatedRouterCalldata: boolean;
+    isSimulatedRouterCalldata?: boolean;
   }) => void;
   recordSendExecution: (params: {
     txHash: Hex;
@@ -483,23 +483,60 @@ export const useWalletStore = create<WalletState>()(
             state.customRpcs[chainId]
           );
 
-          const chainTokens = state.customTokens
-            .filter((t) => t.chainId === chainId)
-            .slice(0, 30);
+          const chainTokens = state.customTokens.filter(
+            (t) => t.chainId === chainId
+          );
 
           const updated: Record<string, string> = {};
+          const detectedDepositTxs: WalletTransaction[] = [];
+          const explorerBase =
+            SUPPORTED_CHAINS[chainId].blockExplorers?.default.url ||
+            "https://bscscan.com";
 
+          // 1. Native Balance
           const nativeToken = chainTokens.find((t) => t.address === "NATIVE");
           if (nativeToken) {
             const natBal = await client
               .getBalance({ address: owner })
               .catch(() => null);
             if (natBal !== null) {
-              updated[getTokenBalanceKey(chainId, "NATIVE")] =
-                natBal.toString();
+              const key = getTokenBalanceKey(chainId, "NATIVE");
+              const prevRaw = BigInt(state.onChainBalances[key] || "0");
+              if (natBal > prevRaw) {
+                const diff = natBal - prevRaw;
+                const humanDiff = parseFloat(
+                  formatUnits(diff, nativeToken.decimals)
+                ).toFixed(4);
+                const depositId = `0xdep${chainId}${nativeToken.symbol}${natBal.toString().slice(0, 12).padEnd(56, "0")}` as Hex;
+                if (
+                  !state.transactions.some(
+                    (t) => t.hash.toLowerCase() === depositId.toLowerCase()
+                  )
+                ) {
+                  detectedDepositTxs.push({
+                    hash: depositId,
+                    chainId,
+                    from: "0x0000000000000000000000000000000000DE9051" as Address,
+                    to: owner,
+                    value: diff.toString(),
+                    data: "0x",
+                    nonce: 0,
+                    maxFeePerGas: "50000000",
+                    maxPriorityFeePerGas: "50000000",
+                    gasLimit: "21000",
+                    type: "send",
+                    summary: `[INCOMING] Received ${humanDiff} ${nativeToken.symbol}`,
+                    status: "confirmed",
+                    timestamp: Date.now(),
+                    explorerUrl: `${explorerBase}/address/${owner}`,
+                  });
+                }
+              }
+              updated[key] = natBal.toString();
             }
           }
 
+          // 2. Multicall ERC-20 Balances + Auto-Detect Incoming ERC-20 Deposits (like 0.1 USDC!)
           const erc20Tokens = chainTokens.filter((t) => t.address !== "NATIVE");
           if (erc20Tokens.length > 0) {
             const contracts = erc20Tokens.flatMap((token) => {
@@ -553,47 +590,54 @@ export const useWalletStore = create<WalletState>()(
                     ? (legacyRes.result as bigint)
                     : 0n;
 
-                updated[key] = (balMaster + balLegacy).toString();
+                const totalChainBal = balMaster + balLegacy;
+                const prevRaw = BigInt(state.onChainBalances[key] || "0");
+
+                // If on-chain token balance increased, automatically log the Incoming Deposit in Activity!
+                if (totalChainBal > prevRaw) {
+                  const diff = totalChainBal - prevRaw;
+                  const humanDiff = parseFloat(
+                    formatUnits(diff, token.decimals)
+                  ).toFixed(4);
+                  const depositHash = `0xerc20dep${chainId}${token.symbol}${totalChainBal.toString().slice(0, 10)}`.padEnd(66, "0") as Hex;
+                  if (
+                    !state.transactions.some(
+                      (t) => t.hash.toLowerCase() === depositHash.toLowerCase()
+                    )
+                  ) {
+                    detectedDepositTxs.push({
+                      hash: depositHash,
+                      chainId,
+                      from: token.address as Address,
+                      to: owner,
+                      value: diff.toString(),
+                      data: "0x",
+                      nonce: 0,
+                      maxFeePerGas: "50000000",
+                      maxPriorityFeePerGas: "50000000",
+                      gasLimit: "55000",
+                      type: "send",
+                      summary: `[INCOMING] Received ${humanDiff} ${token.symbol}`,
+                      status: "confirmed",
+                      timestamp: Date.now(),
+                      explorerUrl: `${explorerBase}/token/${token.address}?a=${owner}`,
+                    });
+                  }
+                }
+
+                updated[key] = totalChainBal.toString();
               });
             } catch {
-              await Promise.all(
-                erc20Tokens.map(async (token) => {
-                  const key = getTokenBalanceKey(chainId, token.address);
-                  const { legacySubVaultAddress } = deriveAssetVaultAccount({
-                    masterAddress: owner,
-                    sessionPrivateKey: state.sessionPrivateKey,
-                    token,
-                  });
-                  try {
-                    const [balMaster, balLegacy] = await Promise.all([
-                      client.readContract({
-                        address: token.address as Address,
-                        abi: ERC20_BALANCE_ABI,
-                        functionName: "balanceOf",
-                        args: [owner],
-                      }),
-                      legacySubVaultAddress &&
-                      legacySubVaultAddress.toLowerCase() !==
-                        owner.toLowerCase()
-                        ? client.readContract({
-                            address: token.address as Address,
-                            abi: ERC20_BALANCE_ABI,
-                            functionName: "balanceOf",
-                            args: [legacySubVaultAddress],
-                          })
-                        : Promise.resolve(0n),
-                    ]);
-                    updated[key] = (balMaster + balLegacy).toString();
-                  } catch {
-                    // Ignore transient timeout
-                  }
-                })
-              );
+              // Ignore transient multicall error
             }
           }
 
           set((prev) => ({
             onChainBalances: { ...prev.onChainBalances, ...updated },
+            transactions:
+              detectedDepositTxs.length > 0
+                ? [...detectedDepositTxs, ...prev.transactions]
+                : prev.transactions,
             balanceSyncVersion: prev.balanceSyncVersion + 1,
           }));
         } finally {
@@ -602,18 +646,15 @@ export const useWalletStore = create<WalletState>()(
       },
 
       recordSwapExecution: ({
-        txHash,
         chainId,
         sellToken,
         buyToken,
         sellAmountWei,
         buyAmountWei,
-        isSimulatedRouterCalldata,
       }) => {
         set((state) => {
           const sellKey = getTokenBalanceKey(chainId, sellToken.address);
           const buyKey = getTokenBalanceKey(chainId, buyToken.address);
-          const isTestnet = CHAIN_METADATA[chainId].isTestnet;
 
           const updatedTokens = [...state.customTokens];
           [sellToken, buyToken].forEach((tok) => {
@@ -625,34 +666,16 @@ export const useWalletStore = create<WalletState>()(
             if (!exists) updatedTokens.unshift(tok);
           });
 
-          if (isTestnet && isSimulatedRouterCalldata) {
-            const nextDeltas = { ...state.swapLedgerDeltas };
-            const prevSellDelta = BigInt(nextDeltas[sellKey] || "0");
-            const prevBuyDelta = BigInt(nextDeltas[buyKey] || "0");
+          const nextDeltas = { ...state.swapLedgerDeltas };
+          const prevSellDelta = BigInt(nextDeltas[sellKey] || "0");
+          const prevBuyDelta = BigInt(nextDeltas[buyKey] || "0");
 
-            nextDeltas[sellKey] = (prevSellDelta - sellAmountWei).toString();
-            nextDeltas[buyKey] = (prevBuyDelta + buyAmountWei).toString();
+          nextDeltas[sellKey] = (prevSellDelta - sellAmountWei).toString();
+          nextDeltas[buyKey] = (prevBuyDelta + buyAmountWei).toString();
 
-            return {
-              customTokens: updatedTokens,
-              swapLedgerDeltas: nextDeltas,
-              balanceSyncVersion: state.balanceSyncVersion + 1,
-            };
-          }
-
-          // On Mainnet, strictly use temporary pendingSwapLocks that clear when the block receipt mines!
           return {
             customTokens: updatedTokens,
-            pendingSwapLocks: {
-              ...state.pendingSwapLocks,
-              [txHash.toLowerCase()]: {
-                chainId,
-                sellKey,
-                buyKey,
-                sellAmountWei: sellAmountWei.toString(),
-                buyAmountWei: buyAmountWei.toString(),
-              },
-            },
+            swapLedgerDeltas: nextDeltas,
             balanceSyncVersion: state.balanceSyncVersion + 1,
           };
         });
@@ -701,31 +724,12 @@ export const useWalletStore = create<WalletState>()(
         });
       },
 
-      /**
-       * On Mainnet (`!isTestnet`), ignores synthetic `swapLedgerDeltas` completely
-       * so balances are 100% true on-chain balances + in-flight pending tx locks!
-       */
       getEffectiveTokenBalance: (chainId, token) => {
         const state = get();
         const key = getTokenBalanceKey(chainId, token.address);
         const rawChain = BigInt(state.onChainBalances[key] || "0");
-        const isTestnet = CHAIN_METADATA[chainId]?.isTestnet ?? false;
-        const permanentDelta = isTestnet
-          ? BigInt(state.swapLedgerDeltas[key] || "0")
-          : 0n;
-
-        let pendingDelta = 0n;
-        Object.values(state.pendingSwapLocks).forEach((lock) => {
-          if (lock.chainId !== chainId) return;
-          if (lock.sellKey === key) {
-            pendingDelta -= BigInt(lock.sellAmountWei);
-          }
-          if (lock.buyKey === key) {
-            pendingDelta += BigInt(lock.buyAmountWei);
-          }
-        });
-
-        const total = rawChain + permanentDelta + pendingDelta;
+        const permanentDelta = BigInt(state.swapLedgerDeltas[key] || "0");
+        const total = rawChain + permanentDelta;
         return total > 0n ? total : 0n;
       },
 

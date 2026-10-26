@@ -41,6 +41,9 @@ interface ParsedTxMetadata {
   formattedDate: string;
   formattedTime: string;
   networkFeeEth: string;
+  swapPaidDetail?: string;
+  swapReceivedDetail?: string;
+  swapRateDetail?: string;
 }
 
 /**
@@ -75,6 +78,38 @@ function parseTransactionMetadata(
 
   const direction: "IN" | "OUT" | "SWAP" =
     tx.type === "swap" ? "SWAP" : isIncoming ? "IN" : "OUT";
+
+  // Check for rich Swap summary: "Swap <amt> <sym> → <amt> <sym> (@ 1 <sym> = <rate> <sym>)"
+  if (direction === "SWAP") {
+    const swapFullMatch = tx.summary.match(
+      /Swap\s+([0-9.]+)\s+([A-Za-z0-9]+)\s*(?:→|->|to)\s*([0-9.]+)\s+([A-Za-z0-9]+)(?:\s*\((?:@\s*)?([^)]+)\))?/i
+    );
+    if (swapFullMatch) {
+      const paid = `${swapFullMatch[1]} ${swapFullMatch[2]}`;
+      const rec = `${swapFullMatch[3]} ${swapFullMatch[4]}`;
+      const rate = swapFullMatch[5]
+        ? swapFullMatch[5].startsWith("@")
+          ? swapFullMatch[5]
+          : `@ ${swapFullMatch[5]}`
+        : `1 ${swapFullMatch[2]} ≈ ${(
+            parseFloat(swapFullMatch[3]) /
+            (parseFloat(swapFullMatch[1]) || 1)
+          ).toFixed(4)} ${swapFullMatch[4]}`;
+
+      return {
+        txId,
+        direction: "SWAP",
+        displayAmount: `${paid} → ${rec}`,
+        symbol: "",
+        formattedDate,
+        formattedTime,
+        networkFeeEth: computeGasFeeString(tx),
+        swapPaidDetail: paid,
+        swapReceivedDetail: rec,
+        swapRateDetail: rate,
+      };
+    }
+  }
 
   // 1. Check if the transaction carries an encoded AetherTransfer payload (`0xa3746572`)
   const decodedPayload = decodeAetherTransferPayload(tx.data);
@@ -157,6 +192,9 @@ function parseTransactionMetadata(
     formattedDate,
     formattedTime,
     networkFeeEth: computeGasFeeString(tx),
+    swapPaidDetail: direction === "SWAP" ? tx.summary : undefined,
+    swapReceivedDetail: direction === "SWAP" ? "Executed" : undefined,
+    swapRateDetail: direction === "SWAP" ? "Market Rate" : undefined,
   };
 }
 
@@ -526,6 +564,30 @@ export default function ActivityView() {
 
             {/* Structured Receipt Details Grid */}
             <div className="p-4 rounded-2xl bg-slate-950/90 border border-white/10 space-y-3 text-xs">
+              {/* Complete Swap Paid / Received / Rate Breakdown */}
+              {selectedMeta.direction === "SWAP" && (
+                <>
+                  <div className="flex items-center justify-between border-b border-white/5 pb-2.5">
+                    <span className="text-slate-400">Amount Paid (Sold)</span>
+                    <span className="font-mono text-rose-400 font-bold">
+                      {selectedMeta.swapPaidDetail}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-white/5 pb-2.5">
+                    <span className="text-slate-400">Amount Received (Bought)</span>
+                    <span className="font-mono text-emerald-400 font-bold">
+                      {selectedMeta.swapReceivedDetail}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-white/5 pb-2.5">
+                    <span className="text-slate-400">Execution Rate</span>
+                    <span className="font-mono text-indigo-300">
+                      {selectedMeta.swapRateDetail}
+                    </span>
+                  </div>
+                </>
+              )}
+
               {/* Date & Exact Time */}
               <div className="flex items-center justify-between">
                 <span className="text-slate-400 flex items-center gap-1.5">
