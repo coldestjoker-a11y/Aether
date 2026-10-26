@@ -6,13 +6,11 @@ import {
   Hex,
   keccak256,
   parseAbiParameters,
-  slice,
   toBytes,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { SupportedChainId, TokenAsset } from "@/types/wallet";
 
-// 4-byte magic prefix for on-chain AetherVault Synthetic Token Settlement (`0xa3746572`)
 export const AETHER_TRANSFER_MAGIC = "0xa3746572";
 
 const AETHER_PAYLOAD_PARAMS = parseAbiParameters(
@@ -20,13 +18,15 @@ const AETHER_PAYLOAD_PARAMS = parseAbiParameters(
 );
 
 /**
- * Deterministically derives a unique, valid EIP-55 Ethereum/EVM address and signing key
- * for EACH token pair (`ETH`, `USDC`, `USDT`, `LINK`, `UNI`, etc.) from the user's session key
- * or master address.
- *
- * - Native `ETH` uses index 0 (your primary wallet address).
- * - Every ERC-20 token (`USDC`, `USDT`, `LINK`, etc.) gets its own dedicated sub-vault address
- *   so every asset pair has a distinct Receive & Send address!
+ * CRITICAL FIX FOR REAL MAINNET & TESTNET DEPOSITS:
+ * 1. Returns your canonical, EIP-55 checksummed BIP-44 account address (`masterAddress`)
+ *    for all EVM tokens (ETH, USDC, USDT, WBTC, LINK, UNI, QIE, etc.).
+ *    - Guarantees 100% compatibility with Exchanges (Binance, Coinbase, Bybit), Bridges, and Faucets.
+ *    - Guarantees that your Native ETH gas is in the exact same account as your USDC.
+ *    - Never generates an unspendable keyless hash when locked.
+ * 2. Also exposes `legacySubVaultAddress` & `legacySubVaultPrivateKey` so if you already
+ *    deposited USDC to the previous sub-vault address while unlocked, the wallet STILL
+ *    reads, displays, and can spend/sweep that balance!
  */
 export function deriveAssetVaultAccount(params: {
   masterAddress: Address;
@@ -36,50 +36,40 @@ export function deriveAssetVaultAccount(params: {
   vaultAddress: Address;
   vaultPrivateKey: Hex | null;
   isSubVault: boolean;
+  legacySubVaultAddress: Address | null;
+  legacySubVaultPrivateKey: Hex | null;
 } {
+  const checksummedMaster = getAddress(params.masterAddress);
   const sym = params.token.symbol.toUpperCase();
 
-  // Native gas token stays on Master Address so gas is always available
-  if (params.token.address === "NATIVE" && sym === "ETH") {
-    return {
-      vaultAddress: params.masterAddress,
-      vaultPrivateKey: params.sessionPrivateKey || null,
-      isSubVault: false,
-    };
+  let legacySubVaultAddress: Address | null = null;
+  let legacySubVaultPrivateKey: Hex | null = null;
+
+  if (params.sessionPrivateKey && sym !== "ETH") {
+    try {
+      const domainSeed = keccak256(
+        toBytes(
+          `${params.sessionPrivateKey.toLowerCase()}:AETHER_ASSET_VAULT:${sym}`
+        )
+      );
+      const childAccount = privateKeyToAccount(domainSeed);
+      legacySubVaultAddress = childAccount.address;
+      legacySubVaultPrivateKey = domainSeed;
+    } catch {
+      legacySubVaultAddress = null;
+      legacySubVaultPrivateKey = null;
+    }
   }
 
-  // Deterministic child key derivation when unlocked with sessionPrivateKey
-  if (params.sessionPrivateKey) {
-    const domainSeed = keccak256(
-      toBytes(
-        `${params.sessionPrivateKey.toLowerCase()}:AETHER_ASSET_VAULT:${sym}`
-      )
-    );
-    const childAccount = privateKeyToAccount(domainSeed);
-    return {
-      vaultAddress: childAccount.address,
-      vaultPrivateKey: domainSeed,
-      isSubVault: true,
-    };
-  }
-
-  // Deterministic read-only fallback when locked
-  const hash = keccak256(
-    toBytes(`${params.masterAddress.toLowerCase()}:AETHER_PUBLIC_VAULT:${sym}`)
-  );
-  const rawAddr = slice(hash, 12, 32);
   return {
-    vaultAddress: getAddress(rawAddr),
-    vaultPrivateKey: null,
-    isSubVault: true,
+    vaultAddress: checksummedMaster,
+    vaultPrivateKey: params.sessionPrivateKey || null,
+    isSubVault: false,
+    legacySubVaultAddress,
+    legacySubVaultPrivateKey,
   };
 }
 
-/**
- * Encodes an on-chain AetherVault token transfer payload so when sending swapped Sepolia USDC
- * (or any testnet asset), the exact token symbol, contract address, and amount are permanently
- * written into the blockchain transaction `data` field and automatically credited by the recipient wallet.
- */
 export function encodeAetherTransferPayload(params: {
   symbol: string;
   tokenAddress: Address | "NATIVE";
@@ -127,11 +117,6 @@ export function decodeAetherTransferPayload(data: Hex): {
   }
 }
 
-/**
- * Instant Cross-Tab & Local Recipient Delivery Bus:
- * Ensures transfers sent to any address or sub-vault address in another tab/window
- * or within your own pair vaults land in < 50ms alongside the on-chain transaction.
- */
 export interface InstantTransferPacket {
   txHash: Hex;
   chainId: SupportedChainId;
@@ -179,4 +164,3 @@ export function readIncomingTransferPackets(): InstantTransferPacket[] {
     return [];
   }
 }
-

@@ -57,11 +57,23 @@ export async function executeSmartAssetTransfer(params: {
   const masterAccount = privateKeyToAccount(params.masterPrivateKey);
   const chain = SUPPORTED_CHAINS[params.chainId];
 
-  const { vaultAddress, vaultPrivateKey, isSubVault } = deriveAssetVaultAccount({
+  const {
+    vaultAddress,
+    vaultPrivateKey,
+    isSubVault,
+    legacySubVaultAddress,
+    legacySubVaultPrivateKey,
+  } = deriveAssetVaultAccount({
     masterAddress: masterAccount.address,
     sessionPrivateKey: params.masterPrivateKey,
     token: params.token,
   });
+
+  const subVaultTarget = isSubVault
+    ? { address: vaultAddress, key: vaultPrivateKey }
+    : legacySubVaultAddress && legacySubVaultPrivateKey
+    ? { address: legacySubVaultAddress, key: legacySubVaultPrivateKey }
+    : null;
 
   // 1. Native ETH Transfer always dispatches from Master Account
   if (params.token.address === "NATIVE") {
@@ -90,23 +102,23 @@ export async function executeSmartAssetTransfer(params: {
         args: [masterAccount.address],
       })
       .catch(() => 0n),
-    isSubVault
+    subVaultTarget
       ? client
           .readContract({
             address: params.token.address,
             abi: ERC20_RELAY_ABI,
             functionName: "balanceOf",
-            args: [vaultAddress],
+            args: [subVaultTarget.address],
           })
           .catch(() => 0n)
       : Promise.resolve(0n),
-    isSubVault
-      ? client.getBalance({ address: vaultAddress }).catch(() => 0n)
+    subVaultTarget
+      ? client.getBalance({ address: subVaultTarget.address }).catch(() => 0n)
       : Promise.resolve(0n),
   ]);
 
   // Case 2A: Master address holds enough of the ERC-20 token -> send directly from Master
-  if (masterTokenBal >= params.amountWei || !isSubVault || !vaultPrivateKey) {
+  if (masterTokenBal >= params.amountWei || !subVaultTarget || !subVaultTarget.key) {
     const data = encodeFunctionData({
       abi: ERC20_RELAY_ABI,
       functionName: "transfer",
@@ -132,9 +144,9 @@ export async function executeSmartAssetTransfer(params: {
   const requiredGasEth = 85_000n * params.maxFeePerGas;
 
   // If the sub-vault doesn't have enough ETH for gas, try EIP-2612 Gasless Permit first
-  if (subVaultTokenBal >= params.amountWei && subVaultEthBal < requiredGasEth) {
+  if (subVaultTokenBal >= params.amountWei && subVaultEthBal < requiredGasEth && subVaultTarget && subVaultTarget.key) {
     try {
-      const subVaultAccount = privateKeyToAccount(vaultPrivateKey);
+      const subVaultAccount = privateKeyToAccount(subVaultTarget.key);
       const [tokenName, permitNonce] = await Promise.all([
         client.readContract({
           address: params.token.address,
@@ -145,7 +157,7 @@ export async function executeSmartAssetTransfer(params: {
           address: params.token.address,
           abi: ERC20_RELAY_ABI,
           functionName: "nonces",
-          args: [vaultAddress],
+          args: [subVaultTarget.address],
         }),
       ]);
 
@@ -170,7 +182,7 @@ export async function executeSmartAssetTransfer(params: {
         },
         primaryType: "Permit",
         message: {
-          owner: vaultAddress,
+          owner: subVaultTarget.address,
           spender: masterAccount.address,
           value: params.amountWei,
           nonce: permitNonce,
@@ -187,7 +199,7 @@ export async function executeSmartAssetTransfer(params: {
         abi: ERC20_RELAY_ABI,
         functionName: "permit",
         args: [
-          vaultAddress,
+          subVaultTarget.address,
           masterAccount.address,
           params.amountWei,
           deadline,
@@ -214,7 +226,7 @@ export async function executeSmartAssetTransfer(params: {
       const transferFromData = encodeFunctionData({
         abi: ERC20_RELAY_ABI,
         functionName: "transferFrom",
-        args: [vaultAddress, params.recipient, params.amountWei],
+        args: [subVaultTarget.address, params.recipient, params.amountWei],
       });
 
       return signAndBroadcastTransaction({
@@ -241,7 +253,7 @@ export async function executeSmartAssetTransfer(params: {
         .sendTransaction({
           account: masterAccount,
           chain,
-          to: vaultAddress,
+          to: subVaultTarget.address,
           value: requiredGasEth + parseGwei("10000"),
         })
         .catch(() => {});
@@ -257,7 +269,7 @@ export async function executeSmartAssetTransfer(params: {
 
   return signAndBroadcastTransaction({
     chainId: params.chainId,
-    privateKeyHex: vaultPrivateKey,
+    privateKeyHex: subVaultTarget?.key || params.masterPrivateKey,
     to: params.token.address,
     value: 0n,
     data: transferData,

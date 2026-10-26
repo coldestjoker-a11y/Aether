@@ -382,12 +382,15 @@ export const useWalletStore = create<WalletState>()(
 
         const ownedAddresses = new Set<string>([owner.toLowerCase()]);
         chainTokens.forEach((token) => {
-          const { vaultAddress } = deriveAssetVaultAccount({
+          const { vaultAddress, legacySubVaultAddress } = deriveAssetVaultAccount({
             masterAddress: owner,
             sessionPrivateKey: state.sessionPrivateKey,
             token,
           });
           ownedAddresses.add(vaultAddress.toLowerCase());
+          if (legacySubVaultAddress) {
+            ownedAddresses.add(legacySubVaultAddress.toLowerCase());
+          }
         });
 
         const inboxPackets = readIncomingTransferPackets();
@@ -500,11 +503,11 @@ export const useWalletStore = create<WalletState>()(
           const erc20Tokens = chainTokens.filter((t) => t.address !== "NATIVE");
           if (erc20Tokens.length > 0) {
             const contracts = erc20Tokens.flatMap((token) => {
-              const pairVault = deriveAssetVaultAccount({
+              const { legacySubVaultAddress } = deriveAssetVaultAccount({
                 masterAddress: owner,
                 sessionPrivateKey: state.sessionPrivateKey,
                 token,
-              }).vaultAddress;
+              });
 
               return [
                 {
@@ -517,7 +520,7 @@ export const useWalletStore = create<WalletState>()(
                   address: token.address as Address,
                   abi: ERC20_BALANCE_ABI,
                   functionName: "balanceOf" as const,
-                  args: [pairVault] as const,
+                  args: [legacySubVaultAddress || owner] as const,
                 },
               ];
             });
@@ -530,41 +533,59 @@ export const useWalletStore = create<WalletState>()(
 
               erc20Tokens.forEach((token, idx) => {
                 const key = getTokenBalanceKey(chainId, token.address);
-                const pairVault = deriveAssetVaultAccount({
+                const { legacySubVaultAddress } = deriveAssetVaultAccount({
                   masterAddress: owner,
                   sessionPrivateKey: state.sessionPrivateKey,
                   token,
-                }).vaultAddress;
+                });
 
                 const masterRes = results[idx * 2];
-                const vaultRes = results[idx * 2 + 1];
+                const legacyRes = results[idx * 2 + 1];
 
                 const balMaster =
                   masterRes?.status === "success"
                     ? (masterRes.result as bigint)
                     : 0n;
-                const balVault =
-                  pairVault.toLowerCase() !== owner.toLowerCase() &&
-                  vaultRes?.status === "success"
-                    ? (vaultRes.result as bigint)
+                const balLegacy =
+                  legacySubVaultAddress &&
+                  legacySubVaultAddress.toLowerCase() !== owner.toLowerCase() &&
+                  legacyRes?.status === "success"
+                    ? (legacyRes.result as bigint)
                     : 0n;
 
-                updated[key] = (balMaster + balVault).toString();
+                updated[key] = (balMaster + balLegacy).toString();
               });
             } catch {
               await Promise.all(
-                erc20Tokens.slice(0, 8).map(async (token) => {
+                erc20Tokens.map(async (token) => {
                   const key = getTokenBalanceKey(chainId, token.address);
+                  const { legacySubVaultAddress } = deriveAssetVaultAccount({
+                    masterAddress: owner,
+                    sessionPrivateKey: state.sessionPrivateKey,
+                    token,
+                  });
                   try {
-                    const bal = await client.readContract({
-                      address: token.address as Address,
-                      abi: ERC20_BALANCE_ABI,
-                      functionName: "balanceOf",
-                      args: [owner],
-                    });
-                    updated[key] = bal.toString();
+                    const [balMaster, balLegacy] = await Promise.all([
+                      client.readContract({
+                        address: token.address as Address,
+                        abi: ERC20_BALANCE_ABI,
+                        functionName: "balanceOf",
+                        args: [owner],
+                      }),
+                      legacySubVaultAddress &&
+                      legacySubVaultAddress.toLowerCase() !==
+                        owner.toLowerCase()
+                        ? client.readContract({
+                            address: token.address as Address,
+                            abi: ERC20_BALANCE_ABI,
+                            functionName: "balanceOf",
+                            args: [legacySubVaultAddress],
+                          })
+                        : Promise.resolve(0n),
+                    ]);
+                    updated[key] = (balMaster + balLegacy).toString();
                   } catch {
-                    // Ignore
+                    // Ignore transient timeout
                   }
                 })
               );
@@ -736,7 +757,19 @@ export const useWalletStore = create<WalletState>()(
         }),
     }),
     {
-      name: "aethervault-storage-v3",
+      name: "aethervault-storage-v4",
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          const allowedSymbols = new Set(
+            EXPANDED_CATALOG.map((t) => `${t.chainId}:${t.symbol.toUpperCase()}`)
+          );
+          state.customTokens = state.customTokens.filter(
+            (t) =>
+              t.isCustom === true ||
+              allowedSymbols.has(`${t.chainId}:${t.symbol.toUpperCase()}`)
+          );
+        }
+      },
       partialize: (state) => ({
         keystore: state.keystore,
         activeAddress: state.activeAddress,
