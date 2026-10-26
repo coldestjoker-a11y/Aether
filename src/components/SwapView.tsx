@@ -75,6 +75,7 @@ export default function SwapView() {
     useState<SecurityAuditResult | null>(null);
   const [needsApproval, setNeedsApproval] = useState<boolean>(false);
   const [unlimitedApproval, setUnlimitedApproval] = useState<boolean>(false);
+  const [isApproving, setIsApproving] = useState<boolean>(false);
   const [isLoadingQuote, setIsLoadingQuote] = useState<boolean>(false);
   const [isSwapping, setIsSwapping] = useState<boolean>(false);
   const [showPreview, setShowPreview] = useState<boolean>(false);
@@ -165,6 +166,7 @@ export default function SwapView() {
   const handleApproveToken = async () => {
     if (!sessionPrivateKey || !quote || sellToken.address === "NATIVE") return;
     setTxError(null);
+    setIsApproving(true);
     triggerHaptic("medium");
     try {
       const amountToApprove = unlimitedApproval
@@ -203,6 +205,8 @@ export default function SwapView() {
       });
     } catch (err: unknown) {
       setTxError(formatRpcError(err));
+    } finally {
+      setIsApproving(false);
     }
   };
 
@@ -556,15 +560,18 @@ export default function SwapView() {
         )}
 
         {needsApproval && (
-          <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2.5">
-            <div className="flex items-start gap-2 text-xs text-amber-200">
-              <Info className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+          <div className="p-3.5 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 space-y-2.5">
+            <div className="flex items-start gap-2 text-xs text-indigo-200">
+              <Info className="w-4 h-4 shrink-0 mt-0.5 text-indigo-400" />
               <span>
-                Approving exact trade amount ({sellAmount} {sellToken?.symbol})
-                for router execution.
+                Step 1 of 2: Authorize the DEX router to swap{" "}
+                <strong>
+                  {sellAmount} {sellToken?.symbol}
+                </strong>
+                .
               </span>
             </div>
-            <label className="flex items-center justify-between text-xs cursor-pointer pt-1">
+            <label className="flex items-center justify-between text-xs cursor-pointer pt-0.5">
               <span className="text-slate-300">
                 Use unlimited allowance instead
               </span>
@@ -572,16 +579,26 @@ export default function SwapView() {
                 type="checkbox"
                 checked={unlimitedApproval}
                 onChange={(e) => setUnlimitedApproval(e.target.checked)}
-                className="accent-amber-500"
+                className="accent-indigo-500"
               />
             </label>
             <button
               type="button"
+              disabled={isApproving}
               onClick={handleApproveToken}
-              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"
+              className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center justify-center gap-2 disabled:opacity-50 transition shadow-md"
             >
-              Approve {unlimitedApproval ? "Unlimited" : sellAmount}{" "}
-              {sellToken?.symbol}
+              {isApproving ? (
+                <AetherWaveLoader
+                  size="sm"
+                  label={`Confirming ${sellToken?.symbol} Approval...`}
+                />
+              ) : (
+                <span>
+                  Approve {unlimitedApproval ? "Unlimited" : sellAmount}{" "}
+                  {sellToken?.symbol}
+                </span>
+              )}
             </button>
           </div>
         )}
