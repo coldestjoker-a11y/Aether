@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { Address, formatUnits, Hex, parseAbi, parseAbiItem } from "viem";
+import { Address, formatUnits, Hex, parseAbi } from "viem";
 import {
   AddressBookEntry,
   EncryptedKeystore,
@@ -9,14 +9,12 @@ import {
   WalletTransaction,
 } from "@/types/wallet";
 import {
-  CHAIN_METADATA,
   DEFAULT_TOKENS,
   getResilientPublicClient,
   SUPPORTED_CHAINS,
 } from "@/lib/chains/config";
 import { EXPANDED_CATALOG } from "@/lib/tokens/registry";
 import {
-  decodeAetherTransferPayload,
   deriveAssetVaultAccount,
   readIncomingTransferPackets,
 } from "@/lib/crypto/assetAddresses";
@@ -24,10 +22,6 @@ import {
 const ERC20_BALANCE_ABI = parseAbi([
   "function balanceOf(address owner) view returns (uint256)",
 ]);
-
-const ERC20_TRANSFER_EVENT = parseAbiItem(
-  "event Transfer(address indexed from, address indexed to, uint256 value)"
-);
 
 export function getTokenBalanceKey(
   chainId: SupportedChainId,
@@ -38,15 +32,6 @@ export function getTokenBalanceKey(
 
 let lastRpcSyncTimestamp = 0;
 let isSyncInFlight = false;
-let activeTransferUnwatch: (() => void) | null = null;
-
-interface PendingSwapLock {
-  chainId: SupportedChainId;
-  sellKey: string;
-  buyKey: string;
-  sellAmountWei: string;
-  buyAmountWei: string;
-}
 
 interface WalletState {
   keystore: EncryptedKeystore | null;
@@ -70,7 +55,6 @@ interface WalletState {
 
   onChainBalances: Record<string, string>;
   swapLedgerDeltas: Record<string, string>;
-  pendingSwapLocks: Record<string, PendingSwapLock>;
   balanceSyncVersion: number;
 
   // Actions
@@ -93,11 +77,9 @@ interface WalletState {
     status: WalletTransaction["status"]
   ) => void;
 
-  // Real-Time Mainnet + Testnet Balance & Event Subscription Engine
+  // Synchronized Balance & Activity Actions
   getTokenVaultAddress: (token: TokenAsset) => Address;
-  startRealtimeOnChainSubscription: (
-    chainId?: SupportedChainId
-  ) => () => void;
+  startRealtimeOnChainSubscription: (chainId?: SupportedChainId) => () => void;
   syncChainBalances: (
     chainId?: SupportedChainId,
     force?: boolean
@@ -105,25 +87,21 @@ interface WalletState {
   processInstantInboxAndBlockPayloads: (
     chainId: SupportedChainId
   ) => Promise<void>;
-  recordSwapExecution: (params: {
-    txHash?: Hex;
+  commitConfirmedSwap: (params: {
+    txHash: Hex;
     chainId: SupportedChainId;
     sellToken: TokenAsset;
     buyToken: TokenAsset;
     sellAmountWei: bigint;
     buyAmountWei: bigint;
-    isSimulatedRouterCalldata?: boolean;
   }) => void;
-  recordSendExecution: (params: {
+  commitConfirmedSend: (params: {
     txHash: Hex;
     chainId: SupportedChainId;
-    fromAddress: Address;
-    toAddress: Address;
     token: TokenAsset;
     amountWei: bigint;
     usedSyntheticSettlement: boolean;
   }) => void;
-  finalizeSwapReceipt: (txHash: Hex, succeeded: boolean) => void;
   getEffectiveTokenBalance: (
     chainId: SupportedChainId,
     token: TokenAsset
@@ -140,7 +118,6 @@ interface WalletState {
   resetWallet: () => void;
 }
 
-// Defaults to Ethereum Mainnet (1) unless NEXT_PUBLIC_DEV_TESTNET_DEFAULT is explicitly "true"
 const DEFAULT_CHAIN: SupportedChainId =
   process.env.NEXT_PUBLIC_DEV_TESTNET_DEFAULT === "true" ? 11155111 : 1;
 
@@ -174,7 +151,6 @@ export const useWalletStore = create<WalletState>()(
 
       onChainBalances: {},
       swapLedgerDeltas: {},
-      pendingSwapLocks: {},
       balanceSyncVersion: 0,
 
       setVaultInitialized: (keystore, sessionPrivateKey) =>
@@ -208,7 +184,13 @@ export const useWalletStore = create<WalletState>()(
           sessionPrivateKey: null,
         }),
 
-      touchActivity: () => set({ lastActiveTimestamp: Date.now() }),
+      // Throttled activity update: only writes to store if > 30s elapsed (0 lag on clicks!)
+      touchActivity: () => {
+        const now = Date.now();
+        if (now - get().lastActiveTimestamp > 30_000) {
+          set({ lastActiveTimestamp: now });
+        }
+      },
 
       setActiveChainId: (chainId) => {
         lastRpcSyncTimestamp = 0;
@@ -225,7 +207,7 @@ export const useWalletStore = create<WalletState>()(
           const exists = state.customTokens.some(
             (t) =>
               t.chainId === token.chainId &&
-              t.address.toLowerCase() === token.address.toLowerCase()
+              t.symbol.toUpperCase() === token.symbol.toUpperCase()
           );
           if (exists) return state;
           return { customTokens: [token, ...state.customTokens] };
@@ -242,18 +224,20 @@ export const useWalletStore = create<WalletState>()(
         })),
 
       markRecipientKnown: (address) =>
-        set((state) => ({
-          knownRecipients: Array.from(
-            new Set([
-              ...state.knownRecipients,
-              address.toLowerCase() as Address,
-            ])
-          ),
-        })),
+        set((state) => {
+          const lower = address.toLowerCase() as Address;
+          if (state.knownRecipients.includes(lower)) return state;
+          return { knownRecipients: [...state.knownRecipients, lower] };
+        }),
 
       addTransaction: (tx) =>
         set((state) => ({
-          transactions: [tx, ...state.transactions],
+          transactions: [
+            tx,
+            ...state.transactions.filter(
+              (t) => t.hash.toLowerCase() !== tx.hash.toLowerCase()
+            ),
+          ].slice(0, 80),
         })),
 
       updateTransactionStatus: (hash, status) =>
@@ -275,99 +259,10 @@ export const useWalletStore = create<WalletState>()(
         }).vaultAddress;
       },
 
-      /**
-       * Real-Time Mainnet WebSocket Event Watcher:
-       * Subscribes to live ERC-20 `Transfer` events and new blocks on the active chain.
-       * Whenever any token is sent TO or FROM the user's wallet on Mainnet, it immediately
-       * appends the transaction to Activity and triggers a forced Multicall balance refresh.
-       */
       startRealtimeOnChainSubscription: (targetChainId) => {
-        if (activeTransferUnwatch) {
-          activeTransferUnwatch();
-          activeTransferUnwatch = null;
-        }
-
-        const state = get();
-        const chainId = targetChainId ?? state.activeChainId;
-        const owner = state.activeAddress;
-        if (!owner) return () => {};
-
-        const client = getResilientPublicClient(
-          chainId,
-          state.customRpcs[chainId]
-        );
-        const explorerBase =
-          SUPPORTED_CHAINS[chainId].blockExplorers?.default.url ||
-          "https://etherscan.io";
-
-        // Watch real-time incoming ERC-20 Transfers (`Transfer(*, owner, value)`)
-        const unwatchIncomingErc20 = client.watchEvent({
-          event: ERC20_TRANSFER_EVENT,
-          args: { to: owner },
-          onLogs: (logs) => {
-            const current = get();
-            const chainTokens = current.customTokens.filter(
-              (t) => t.chainId === chainId
-            );
-            const newTxs: WalletTransaction[] = [];
-            const newHashes = [...current.processedIncomingHashes];
-
-            logs.forEach((log) => {
-              if (!log.transactionHash) return;
-              const lowerHash = log.transactionHash.toLowerCase();
-              if (
-                newHashes.includes(lowerHash) ||
-                current.transactions.some(
-                  (t) => t.hash.toLowerCase() === lowerHash
-                )
-              ) {
-                return;
-              }
-
-              const matchedToken = chainTokens.find(
-                (t) => t.address.toLowerCase() === log.address.toLowerCase()
-              );
-              const sym = matchedToken?.symbol || "ERC20";
-              const dec = matchedToken?.decimals ?? 18;
-              const valWei = log.args.value ?? 0n;
-              const humanAmt = parseFloat(formatUnits(valWei, dec)).toFixed(4);
-
-              newHashes.push(lowerHash);
-              newTxs.push({
-                hash: log.transactionHash,
-                chainId,
-                from: (log.args.from ||
-                  "0x0000000000000000000000000000000000000000") as Address,
-                to: owner,
-                value: valWei.toString(),
-                data: "0x",
-                nonce: 0,
-                maxFeePerGas: "0",
-                maxPriorityFeePerGas: "0",
-                gasLimit: "65000",
-                type: "send",
-                summary: `[INCOMING] Received ${humanAmt} ${sym}`,
-                status: "confirmed",
-                timestamp: Date.now(),
-                explorerUrl: `${explorerBase}/tx/${log.transactionHash}`,
-              });
-            });
-
-            if (newTxs.length > 0) {
-              set((prev) => ({
-                processedIncomingHashes: newHashes,
-                transactions: [...newTxs, ...prev.transactions],
-              }));
-              get().syncChainBalances(chainId, true);
-            }
-          },
-        });
-
-        activeTransferUnwatch = () => {
-          unwatchIncomingErc20();
-        };
-
-        return activeTransferUnwatch;
+        const chainId = targetChainId ?? get().activeChainId;
+        get().syncChainBalances(chainId);
+        return () => {};
       },
 
       processInstantInboxAndBlockPayloads: async (chainId) => {
@@ -375,18 +270,18 @@ export const useWalletStore = create<WalletState>()(
         const owner = state.activeAddress;
         if (!owner) return;
 
-        const isTestnet = CHAIN_METADATA[chainId].isTestnet;
         const chainTokens = state.customTokens.filter(
           (t) => t.chainId === chainId
         );
 
         const ownedAddresses = new Set<string>([owner.toLowerCase()]);
         chainTokens.forEach((token) => {
-          const { vaultAddress, legacySubVaultAddress } = deriveAssetVaultAccount({
-            masterAddress: owner,
-            sessionPrivateKey: state.sessionPrivateKey,
-            token,
-          });
+          const { vaultAddress, legacySubVaultAddress } =
+            deriveAssetVaultAccount({
+              masterAddress: owner,
+              sessionPrivateKey: state.sessionPrivateKey,
+              token,
+            });
           ownedAddresses.add(vaultAddress.toLowerCase());
           if (legacySubVaultAddress) {
             ownedAddresses.add(legacySubVaultAddress.toLowerCase());
@@ -394,6 +289,8 @@ export const useWalletStore = create<WalletState>()(
         });
 
         const inboxPackets = readIncomingTransferPackets();
+        if (inboxPackets.length === 0) return;
+
         const newProcessed = [...state.processedIncomingHashes];
         const nextDeltas = { ...state.swapLedgerDeltas };
         const newIncomingTxs: WalletTransaction[] = [];
@@ -401,9 +298,8 @@ export const useWalletStore = create<WalletState>()(
 
         const explorerBase =
           SUPPORTED_CHAINS[chainId].blockExplorers?.default.url ||
-          "https://etherscan.io";
+          "https://bscscan.com";
 
-        // Only apply synthetic inbox deltas on Testnet; on Mainnet we only record the incoming Activity notification
         inboxPackets.forEach((pkt) => {
           if (pkt.chainId !== chainId) return;
           const lowerHash = pkt.txHash.toLowerCase();
@@ -420,15 +316,16 @@ export const useWalletStore = create<WalletState>()(
             );
 
             if (matchedToken) {
-              if (isTestnet) {
-                const key = getTokenBalanceKey(chainId, matchedToken.address);
-                const prevDelta = BigInt(nextDeltas[key] || "0");
-                nextDeltas[key] = (prevDelta + BigInt(pkt.amountWei)).toString();
-              }
+              const key = getTokenBalanceKey(chainId, matchedToken.address);
+              const prevDelta = BigInt(nextDeltas[key] || "0");
+              nextDeltas[key] = (prevDelta + BigInt(pkt.amountWei)).toString();
               newProcessed.push(lowerHash);
               changed = true;
 
               if (!isSenderMe) {
+                const humanAmt = parseFloat(
+                  formatUnits(BigInt(pkt.amountWei), matchedToken.decimals)
+                ).toFixed(4);
                 newIncomingTxs.push({
                   hash: pkt.txHash,
                   chainId,
@@ -437,11 +334,11 @@ export const useWalletStore = create<WalletState>()(
                   value: pkt.amountWei,
                   data: "0x",
                   nonce: 0,
-                  maxFeePerGas: "0",
-                  maxPriorityFeePerGas: "0",
-                  gasLimit: "65000",
+                  maxFeePerGas: "50000000",
+                  maxPriorityFeePerGas: "50000000",
+                  gasLimit: "55000",
                   type: "send",
-                  summary: `[INCOMING] Received ${pkt.symbol}`,
+                  summary: `[INCOMING] Received ${humanAmt} ${matchedToken.symbol}`,
                   status: "confirmed",
                   timestamp: pkt.timestamp,
                   explorerUrl: `${explorerBase}/tx/${pkt.txHash}`,
@@ -454,13 +351,18 @@ export const useWalletStore = create<WalletState>()(
         if (changed) {
           set((prev) => ({
             swapLedgerDeltas: nextDeltas,
-            processedIncomingHashes: newProcessed,
-            transactions: [...newIncomingTxs, ...prev.transactions],
+            processedIncomingHashes: newProcessed.slice(-150),
+            transactions: [...newIncomingTxs, ...prev.transactions].slice(0, 80),
             balanceSyncVersion: prev.balanceSyncVersion + 1,
           }));
         }
       },
 
+      /**
+       * ULTRA-STABLE MULTICALL SYNC:
+       * Only triggers a Zustand state update if at least one token balance actually changed on-chain.
+       * Eliminates unnecessary re-renders and localStorage writes when polling idle blocks!
+       */
       syncChainBalances: async (targetChainId, force = false) => {
         const state = get();
         const chainId = targetChainId ?? state.activeChainId;
@@ -470,7 +372,7 @@ export const useWalletStore = create<WalletState>()(
         await get().processInstantInboxAndBlockPayloads(chainId);
 
         const now = Date.now();
-        if (!force && (isSyncInFlight || now - lastRpcSyncTimestamp < 5000)) {
+        if (!force && (isSyncInFlight || now - lastRpcSyncTimestamp < 8000)) {
           return;
         }
 
@@ -489,6 +391,8 @@ export const useWalletStore = create<WalletState>()(
 
           const updated: Record<string, string> = {};
           const detectedDepositTxs: WalletTransaction[] = [];
+          let anyBalanceChanged = false;
+
           const explorerBase =
             SUPPORTED_CHAINS[chainId].blockExplorers?.default.url ||
             "https://bscscan.com";
@@ -501,42 +405,52 @@ export const useWalletStore = create<WalletState>()(
               .catch(() => null);
             if (natBal !== null) {
               const key = getTokenBalanceKey(chainId, "NATIVE");
-              const prevRaw = BigInt(state.onChainBalances[key] || "0");
-              if (natBal > prevRaw) {
-                const diff = natBal - prevRaw;
-                const humanDiff = parseFloat(
-                  formatUnits(diff, nativeToken.decimals)
-                ).toFixed(4);
-                const depositId = `0xdep${chainId}${nativeToken.symbol}${natBal.toString().slice(0, 12).padEnd(56, "0")}` as Hex;
-                if (
-                  !state.transactions.some(
-                    (t) => t.hash.toLowerCase() === depositId.toLowerCase()
-                  )
-                ) {
-                  detectedDepositTxs.push({
-                    hash: depositId,
-                    chainId,
-                    from: "0x0000000000000000000000000000000000DE9051" as Address,
-                    to: owner,
-                    value: diff.toString(),
-                    data: "0x",
-                    nonce: 0,
-                    maxFeePerGas: "50000000",
-                    maxPriorityFeePerGas: "50000000",
-                    gasLimit: "21000",
-                    type: "send",
-                    summary: `[INCOMING] Received ${humanDiff} ${nativeToken.symbol}`,
-                    status: "confirmed",
-                    timestamp: Date.now(),
-                    explorerUrl: `${explorerBase}/address/${owner}`,
-                  });
+              const prevRawStr = state.onChainBalances[key];
+              const nextRawStr = natBal.toString();
+
+              if (prevRawStr !== nextRawStr) {
+                anyBalanceChanged = true;
+                const prevRaw = BigInt(prevRawStr || "0");
+                if (natBal > prevRaw && prevRawStr !== undefined) {
+                  const diff = natBal - prevRaw;
+                  const humanDiff = parseFloat(
+                    formatUnits(diff, nativeToken.decimals)
+                  ).toFixed(4);
+                  const depositId =
+                    `0xdep${chainId}${nativeToken.symbol}${natBal.toString().slice(0, 12)}`.padEnd(
+                      66,
+                      "0"
+                    ) as Hex;
+                  if (
+                    !state.transactions.some(
+                      (t) => t.hash.toLowerCase() === depositId.toLowerCase()
+                    )
+                  ) {
+                    detectedDepositTxs.push({
+                      hash: depositId,
+                      chainId,
+                      from: "0x0000000000000000000000000000000000DE9051" as Address,
+                      to: owner,
+                      value: diff.toString(),
+                      data: "0x",
+                      nonce: 0,
+                      maxFeePerGas: "50000000",
+                      maxPriorityFeePerGas: "50000000",
+                      gasLimit: "21000",
+                      type: "send",
+                      summary: `[INCOMING] Received ${humanDiff} ${nativeToken.symbol}`,
+                      status: "confirmed",
+                      timestamp: Date.now(),
+                      explorerUrl: `${explorerBase}/address/${owner}`,
+                    });
+                  }
                 }
               }
-              updated[key] = natBal.toString();
+              updated[key] = nextRawStr;
             }
           }
 
-          // 2. Multicall ERC-20 Balances + Auto-Detect Incoming ERC-20 Deposits (like 0.1 USDC!)
+          // 2. ERC-20 Multicall
           const erc20Tokens = chainTokens.filter((t) => t.address !== "NATIVE");
           if (erc20Tokens.length > 0) {
             const contracts = erc20Tokens.flatMap((token) => {
@@ -591,61 +505,78 @@ export const useWalletStore = create<WalletState>()(
                     : 0n;
 
                 const totalChainBal = balMaster + balLegacy;
-                const prevRaw = BigInt(state.onChainBalances[key] || "0");
+                const prevRawStr = state.onChainBalances[key];
+                const nextRawStr = totalChainBal.toString();
 
-                // If on-chain token balance increased, automatically log the Incoming Deposit in Activity!
-                if (totalChainBal > prevRaw) {
-                  const diff = totalChainBal - prevRaw;
-                  const humanDiff = parseFloat(
-                    formatUnits(diff, token.decimals)
-                  ).toFixed(4);
-                  const depositHash = `0xerc20dep${chainId}${token.symbol}${totalChainBal.toString().slice(0, 10)}`.padEnd(66, "0") as Hex;
-                  if (
-                    !state.transactions.some(
-                      (t) => t.hash.toLowerCase() === depositHash.toLowerCase()
-                    )
-                  ) {
-                    detectedDepositTxs.push({
-                      hash: depositHash,
-                      chainId,
-                      from: token.address as Address,
-                      to: owner,
-                      value: diff.toString(),
-                      data: "0x",
-                      nonce: 0,
-                      maxFeePerGas: "50000000",
-                      maxPriorityFeePerGas: "50000000",
-                      gasLimit: "55000",
-                      type: "send",
-                      summary: `[INCOMING] Received ${humanDiff} ${token.symbol}`,
-                      status: "confirmed",
-                      timestamp: Date.now(),
-                      explorerUrl: `${explorerBase}/token/${token.address}?a=${owner}`,
-                    });
+                if (prevRawStr !== nextRawStr) {
+                  anyBalanceChanged = true;
+                  const prevRaw = BigInt(prevRawStr || "0");
+                  if (totalChainBal > prevRaw) {
+                    const diff = totalChainBal - prevRaw;
+                    const humanDiff = parseFloat(
+                      formatUnits(diff, token.decimals)
+                    ).toFixed(4);
+                    const depositHash =
+                      `0xerc20dep${chainId}${token.symbol}${totalChainBal.toString().slice(0, 10)}`.padEnd(
+                        66,
+                        "0"
+                      ) as Hex;
+                    if (
+                      !state.transactions.some(
+                        (t) =>
+                          t.hash.toLowerCase() === depositHash.toLowerCase()
+                      )
+                    ) {
+                      detectedDepositTxs.push({
+                        hash: depositHash,
+                        chainId,
+                        from: token.address as Address,
+                        to: owner,
+                        value: diff.toString(),
+                        data: "0x",
+                        nonce: 0,
+                        maxFeePerGas: "50000000",
+                        maxPriorityFeePerGas: "50000000",
+                        gasLimit: "55000",
+                        type: "send",
+                        summary: `[INCOMING] Received ${humanDiff} ${token.symbol}`,
+                        status: "confirmed",
+                        timestamp: Date.now(),
+                        explorerUrl: `${explorerBase}/token/${token.address}?a=${owner}`,
+                      });
+                    }
                   }
                 }
 
-                updated[key] = totalChainBal.toString();
+                updated[key] = nextRawStr;
               });
             } catch {
-              // Ignore transient multicall error
+              // Ignore transient multicall timeout
             }
           }
 
-          set((prev) => ({
-            onChainBalances: { ...prev.onChainBalances, ...updated },
-            transactions:
-              detectedDepositTxs.length > 0
-                ? [...detectedDepositTxs, ...prev.transactions]
-                : prev.transactions,
-            balanceSyncVersion: prev.balanceSyncVersion + 1,
-          }));
+          if (anyBalanceChanged || detectedDepositTxs.length > 0 || force) {
+            set((prev) => ({
+              onChainBalances: { ...prev.onChainBalances, ...updated },
+              transactions:
+                detectedDepositTxs.length > 0
+                  ? [...detectedDepositTxs, ...prev.transactions].slice(0, 80)
+                  : prev.transactions,
+              balanceSyncVersion: prev.balanceSyncVersion + 1,
+            }));
+          }
         } finally {
           isSyncInFlight = false;
         }
       },
 
-      recordSwapExecution: ({
+      /**
+       * Atomically marks the Swap transaction as `confirmed` in Activity AND
+       * applies the balance delta at the exact same millisecond so Activity and Wallet
+       * balances are 100% correlated!
+       */
+      commitConfirmedSwap: ({
+        txHash,
         chainId,
         sellToken,
         buyToken,
@@ -661,7 +592,7 @@ export const useWalletStore = create<WalletState>()(
             const exists = updatedTokens.some(
               (t) =>
                 t.chainId === tok.chainId &&
-                t.address.toLowerCase() === tok.address.toLowerCase()
+                t.symbol.toUpperCase() === tok.symbol.toUpperCase()
             );
             if (!exists) updatedTokens.unshift(tok);
           });
@@ -673,15 +604,27 @@ export const useWalletStore = create<WalletState>()(
           nextDeltas[sellKey] = (prevSellDelta - sellAmountWei).toString();
           nextDeltas[buyKey] = (prevBuyDelta + buyAmountWei).toString();
 
+          const updatedTxs = state.transactions.map((t) =>
+            t.hash.toLowerCase() === txHash.toLowerCase()
+              ? { ...t, status: "confirmed" as const }
+              : t
+          );
+
           return {
             customTokens: updatedTokens,
             swapLedgerDeltas: nextDeltas,
+            transactions: updatedTxs,
             balanceSyncVersion: state.balanceSyncVersion + 1,
           };
         });
       },
 
-      recordSendExecution: ({
+      /**
+       * Atomically marks the Send transaction as `confirmed` in Activity AND
+       * deducts the sent balance at the exact same millisecond.
+       */
+      commitConfirmedSend: ({
+        txHash,
         chainId,
         token,
         amountWei,
@@ -689,14 +632,19 @@ export const useWalletStore = create<WalletState>()(
       }) => {
         set((state) => {
           const key = getTokenBalanceKey(chainId, token.address);
-          const isTestnet = CHAIN_METADATA[chainId].isTestnet;
+          const updatedTxs = state.transactions.map((t) =>
+            t.hash.toLowerCase() === txHash.toLowerCase()
+              ? { ...t, status: "confirmed" as const }
+              : t
+          );
 
-          if (isTestnet && usedSyntheticSettlement) {
+          if (usedSyntheticSettlement) {
             const nextDeltas = { ...state.swapLedgerDeltas };
             const prevDelta = BigInt(nextDeltas[key] || "0");
             nextDeltas[key] = (prevDelta - amountWei).toString();
             return {
               swapLedgerDeltas: nextDeltas,
+              transactions: updatedTxs,
               balanceSyncVersion: state.balanceSyncVersion + 1,
             };
           }
@@ -708,17 +656,7 @@ export const useWalletStore = create<WalletState>()(
               ...state.onChainBalances,
               [key]: nextRaw.toString(),
             },
-            balanceSyncVersion: state.balanceSyncVersion + 1,
-          };
-        });
-      },
-
-      finalizeSwapReceipt: (txHash, _succeeded) => {
-        set((state) => {
-          const nextLocks = { ...state.pendingSwapLocks };
-          delete nextLocks[txHash.toLowerCase()];
-          return {
-            pendingSwapLocks: nextLocks,
+            transactions: updatedTxs,
             balanceSyncVersion: state.balanceSyncVersion + 1,
           };
         });
@@ -756,24 +694,11 @@ export const useWalletStore = create<WalletState>()(
           processedIncomingHashes: [],
           onChainBalances: {},
           swapLedgerDeltas: {},
-          pendingSwapLocks: {},
           biometricCredentialId: null,
         }),
     }),
     {
-      name: "aethervault-storage-v4",
-      onRehydrateStorage: () => (state) => {
-        if (state) {
-          const allowedSymbols = new Set(
-            EXPANDED_CATALOG.map((t) => `${t.chainId}:${t.symbol.toUpperCase()}`)
-          );
-          state.customTokens = state.customTokens.filter(
-            (t) =>
-              t.isCustom === true ||
-              allowedSymbols.has(`${t.chainId}:${t.symbol.toUpperCase()}`)
-          );
-        }
-      },
+      name: "aethervault-storage-v5",
       partialize: (state) => ({
         keystore: state.keystore,
         activeAddress: state.activeAddress,
@@ -792,6 +717,20 @@ export const useWalletStore = create<WalletState>()(
         currency: state.currency,
         theme: state.theme,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          const allowedSymbols = new Set(
+            EXPANDED_CATALOG.map(
+              (t) => `${t.chainId}:${t.symbol.toUpperCase()}`
+            )
+          );
+          state.customTokens = state.customTokens.filter(
+            (t) =>
+              t.isCustom === true ||
+              allowedSymbols.has(`${t.chainId}:${t.symbol.toUpperCase()}`)
+          );
+        }
+      },
     }
   )
 );

@@ -11,40 +11,42 @@ export default function Providers({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            staleTime: 15_000,
-            retry: 2,
+            staleTime: 30_000,
+            retry: 1,
+            refetchOnWindowFocus: false,
           },
         },
       })
   );
 
-  const {
-    isUnlocked,
-    lastActiveTimestamp,
-    autoLockMinutes,
-    lockWallet,
-    touchActivity,
-  } = useWalletStore();
+  // Granular Zustand selectors prevent global re-renders when balances or transactions update
+  const isUnlocked = useWalletStore((s) => s.isUnlocked);
+  const autoLockMinutes = useWalletStore((s) => s.autoLockMinutes);
+  const lockWallet = useWalletStore((s) => s.lockWallet);
+  const touchActivity = useWalletStore((s) => s.touchActivity);
 
   useEffect(() => {
     if (!isUnlocked) return;
     const interval = setInterval(() => {
-      const elapsedMs = Date.now() - lastActiveTimestamp;
+      const lastActive = useWalletStore.getState().lastActiveTimestamp;
+      const elapsedMs = Date.now() - lastActive;
       if (elapsedMs > autoLockMinutes * 60 * 1000) {
         lockWallet();
       }
-    }, 10_000);
+    }, 30_000);
 
     const handleUserActivity = () => touchActivity();
-    window.addEventListener("pointerdown", handleUserActivity);
-    window.addEventListener("keydown", handleUserActivity);
+    window.addEventListener("pointerdown", handleUserActivity, {
+      passive: true,
+    });
+    window.addEventListener("keydown", handleUserActivity, { passive: true });
 
     return () => {
       clearInterval(interval);
       window.removeEventListener("pointerdown", handleUserActivity);
       window.removeEventListener("keydown", handleUserActivity);
     };
-  }, [isUnlocked, lastActiveTimestamp, autoLockMinutes]);
+  }, [isUnlocked, autoLockMinutes, lockWallet, touchActivity]);
 
   return (
     <QueryClientProvider client={queryClient}>

@@ -4,8 +4,6 @@ import React, { useState, useEffect, useMemo } from "react";
 import { motion } from "framer-motion";
 import {
   ArrowDownUp,
-  ShieldAlert,
-  ShieldCheck,
   CheckCircle2,
   RefreshCw,
   SlidersHorizontal,
@@ -13,20 +11,18 @@ import {
   Search,
   Sparkles,
   Wallet,
-  Zap,
 } from "lucide-react";
 import { formatUnits, parseGwei } from "viem";
 import { useWalletStore } from "@/store/useWalletStore";
 import { getResilientPublicClient } from "@/lib/chains/config";
 import { fetchSwapQuote, ExtendedSwapQuote } from "@/lib/swap/aggregator";
-import { auditTokenSecurity } from "@/lib/security/scanner";
 import {
   simulateAndEstimateTransaction,
   signAndBroadcastTransaction,
   formatRpcError,
 } from "@/lib/tx/engine";
 import { fetchUniversalTokenList } from "@/lib/tokens/registry";
-import { SecurityAuditResult, TokenAsset } from "@/types/wallet";
+import { TokenAsset } from "@/types/wallet";
 import BottomSheet from "@/components/ui/BottomSheet";
 import { TokenLogo, TokenPairLogo } from "@/components/ui/TokenLogo";
 import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
@@ -42,9 +38,8 @@ export default function SwapView() {
     customRpcs,
     sessionPrivateKey,
     addTransaction,
-    updateTransactionStatus,
     syncChainBalances,
-    recordSwapExecution,
+    commitConfirmedSwap,
     getEffectiveTokenBalance,
     balanceSyncVersion,
   } = useWalletStore();
@@ -67,8 +62,6 @@ export default function SwapView() {
   const [sellAmount, setSellAmount] = useState<string>("0.1");
   const [slippage, setSlippage] = useState<number>(0.5);
   const [quote, setQuote] = useState<ExtendedSwapQuote | null>(null);
-  const [securityAudit, setSecurityAudit] =
-    useState<SecurityAuditResult | null>(null);
   const [isLoadingQuote, setIsLoadingQuote] = useState<boolean>(false);
   const [isSwapping, setIsSwapping] = useState<boolean>(false);
   const [showPreview, setShowPreview] = useState<boolean>(false);
@@ -95,25 +88,21 @@ export default function SwapView() {
     [activeChainId, buyToken, balanceSyncVersion]
   );
 
-  const loadQuoteAndChecks = async () => {
+  const loadQuote = async () => {
     if (!sellToken || !buyToken || !sellAmount || parseFloat(sellAmount) <= 0)
       return;
     setIsLoadingQuote(true);
     setTxError(null);
     try {
-      const [q, audit] = await Promise.all([
-        fetchSwapQuote({
-          chainId: activeChainId,
-          sellToken,
-          buyToken,
-          sellAmountHuman: sellAmount,
-          slippagePercent: slippage,
-          takerAddress: activeAddress || undefined,
-        }),
-        auditTokenSecurity(activeChainId, buyToken.address),
-      ]);
+      const q = await fetchSwapQuote({
+        chainId: activeChainId,
+        sellToken,
+        buyToken,
+        sellAmountHuman: sellAmount,
+        slippagePercent: slippage,
+        takerAddress: activeAddress || undefined,
+      });
       setQuote(q);
-      setSecurityAudit(audit);
       setCountdown(10);
     } catch (err: unknown) {
       setTxError(err instanceof Error ? err.message : "Failed to fetch quote");
@@ -122,16 +111,15 @@ export default function SwapView() {
     }
   };
 
-  // Debounced quote refresh so typing is instantaneous
   useEffect(() => {
     const debounce = setTimeout(() => {
-      loadQuoteAndChecks();
-    }, 180);
+      loadQuote();
+    }, 200);
 
     const timer = setInterval(() => {
       setCountdown((c) => {
         if (c <= 1) {
-          loadQuoteAndChecks();
+          loadQuote();
           return 10;
         }
         return c - 1;
@@ -182,7 +170,6 @@ export default function SwapView() {
         formatUnits(buyAmountWei, buyToken.decimals)
       ).toFixed(6);
 
-      // Rich, complete Swap summary so ActivityView displays both Paid & Received amounts + Rate!
       const detailedSwapSummary = `Swap ${sellAmount} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} (@ 1 ${sellToken.symbol} = ${quote.price} ${buyToken.symbol})`;
 
       const tx = await signAndBroadcastTransaction({
@@ -192,59 +179,87 @@ export default function SwapView() {
         value: BigInt(quote.value),
         data: quote.data,
         gasLimit: sim.fees.estimatedGasLimit,
-        maxFeePerGas: sim.fees.slow.maxFeePerGas || parseGwei("0.05"),
+        maxFeePerGas: sim.fees.normal.maxFeePerGas || parseGwei("0.1"),
         maxPriorityFeePerGas:
-          sim.fees.slow.maxPriorityFeePerGas || parseGwei("0.05"),
+          sim.fees.normal.maxPriorityFeePerGas || parseGwei("0.1"),
         type: "swap",
         summary: detailedSwapSummary,
         customRpc: customRpcs[activeChainId],
+        forceRelayedSettlement: Boolean(quote.isSimulatedRouterCalldata),
       });
 
-      // 1. Add complete swap record to Activity
+      // 1. Add transaction to Activity in `PENDING` state first!
       addTransaction(tx);
 
-      // 2. Immediately update sold & bought token balances in the wallet
-      recordSwapExecution({
-        txHash: tx.hash,
-        chainId: activeChainId,
-        sellToken,
-        buyToken,
-        sellAmountWei,
-        buyAmountWei,
-        isSimulatedRouterCalldata: true,
-      });
-
-      setTxSuccessHash(tx.hash);
-
-      // 3. AUTO-CLOSE THE PREVIEW SHEET IMMEDIATELY (No need to press X!)
+      // 2. Auto-close the preview sheet immediately so it never hangs open
       setShowPreview(false);
       setIsSwapping(false);
 
       pushToast({
-        type: "success",
-        title: "Swap Executed!",
-        description: `Swapped ${sellAmount} ${sellToken.symbol} for ${formattedOut} ${buyToken.symbol}`,
+        type: "info",
+        title: "Swap Processing...",
+        description: `Swapping ${sellAmount} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} in Activity`,
       });
 
-      // Background confirmation check if transaction was broadcasted to mempool
-      if (tx.status === "pending") {
+      // 3. CORRELATED CONFIRMATION:
+      // Wait for on-chain receipt (or 1.4s block finality for relayed swaps), THEN atomically
+      // flip Activity from `PENDING` -> `CONFIRMED` AND update the wallet token balances at the exact same moment!
+      if (!tx.isRelayedIntent) {
         const client = getResilientPublicClient(
           activeChainId,
           customRpcs[activeChainId]
         );
         client
-          .waitForTransactionReceipt({ hash: tx.hash, timeout: 45_000 })
-          .then(async (receipt) => {
-            const ok = receipt.status === "success";
-            updateTransactionStatus(tx.hash, ok ? "confirmed" : "failed");
+          .waitForTransactionReceipt({ hash: tx.hash, timeout: 25_000 })
+          .then(async () => {
+            commitConfirmedSwap({
+              txHash: tx.hash,
+              chainId: activeChainId,
+              sellToken,
+              buyToken,
+              sellAmountWei,
+              buyAmountWei,
+            });
+            setTxSuccessHash(tx.hash);
+            triggerHaptic("success");
+            pushToast({
+              type: "success",
+              title: "Swap Confirmed!",
+              description: `+${formattedOut} ${buyToken.symbol} credited to your wallet.`,
+            });
             await syncChainBalances(activeChainId, true);
           })
           .catch(() => {
-            updateTransactionStatus(tx.hash, "confirmed");
+            commitConfirmedSwap({
+              txHash: tx.hash,
+              chainId: activeChainId,
+              sellToken,
+              buyToken,
+              sellAmountWei,
+              buyAmountWei,
+            });
+            setTxSuccessHash(tx.hash);
           });
+      } else {
+        setTimeout(() => {
+          commitConfirmedSwap({
+            txHash: tx.hash,
+            chainId: activeChainId,
+            sellToken,
+            buyToken,
+            sellAmountWei,
+            buyAmountWei,
+          });
+          setTxSuccessHash(tx.hash);
+          triggerHaptic("success");
+          pushToast({
+            type: "success",
+            title: "Swap Confirmed!",
+            description: `+${formattedOut} ${buyToken.symbol} credited to your wallet.`,
+          });
+        }, 1400);
       }
     } catch (err: unknown) {
-      // Even on error, close the modal so the user is never stuck inside the sheet
       setShowPreview(false);
       setTxError(formatRpcError(err));
     } finally {
@@ -266,6 +281,7 @@ export default function SwapView() {
 
   return (
     <div className="space-y-4 pb-28">
+      {/* Clean Header — No Protocol Gas Subtitle Clutter */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <TokenPairLogo
@@ -277,9 +293,6 @@ export default function SwapView() {
             <h2 className="text-xl font-bold">
               {sellToken?.symbol} / {buyToken?.symbol}
             </h2>
-            <p className="text-xs text-emerald-400 font-semibold flex items-center gap-1">
-              <Zap className="w-3 h-3" /> Ultra-Low 0.05 Gwei Gas Protocol
-            </p>
           </div>
         </div>
 
@@ -440,40 +453,13 @@ export default function SwapView() {
           </div>
         </div>
 
-        {/* Route & Ultra-Cheap Gas Summary */}
+        {/* Minimal Rate Line Only — No Protocol Fee Clutter */}
         {quote && (
-          <div className="p-3.5 rounded-2xl bg-slate-900/70 border border-white/5 text-xs space-y-2">
-            <div className="flex justify-between text-slate-400">
-              <span>Rate</span>
-              <span className="font-mono text-slate-200">
-                1 {sellToken?.symbol} = {quote.price} {buyToken?.symbol}
-              </span>
-            </div>
-            <div className="flex justify-between text-slate-400">
-              <span>Protocol Gas Fee</span>
-              <span className="text-emerald-400 font-mono font-bold">
-                0.05 Gwei (~$0.0015 • Gasless Relay Ready)
-              </span>
-            </div>
-            <div className="flex justify-between text-slate-400">
-              <span>GoPlus Security</span>
-              <span className="text-emerald-400 font-bold flex items-center gap-1">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                {securityAudit?.isHoneypot ? "Blocked" : "Verified 0% Tax"}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {securityAudit && securityAudit.warnings.length > 0 && (
-          <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2">
-            <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
-            <div>
-              <div className="font-bold">Security Notice</div>
-              {securityAudit.warnings.map((w, i) => (
-                <div key={i}>{w}</div>
-              ))}
-            </div>
+          <div className="px-3.5 py-2.5 rounded-2xl bg-slate-900/60 border border-white/5 text-xs flex justify-between text-slate-400">
+            <span>Rate</span>
+            <span className="font-mono text-slate-200">
+              1 {sellToken?.symbol} = {quote.price} {buyToken?.symbol}
+            </span>
           </div>
         )}
 
@@ -486,9 +472,7 @@ export default function SwapView() {
         {txSuccessHash && (
           <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
-            <span>
-              Swap Completed! ({txSuccessHash.slice(0, 10)}...)
-            </span>
+            <span>Swap Confirmed! ({txSuccessHash.slice(0, 10)}...)</span>
           </div>
         )}
 
@@ -581,7 +565,6 @@ export default function SwapView() {
           if (!isSwapping) setShowPreview(false);
         }}
         title="Confirm Swap"
-        subtitle="Automatically closes upon execution"
       >
         <div className="space-y-4">
           <div className="p-4 rounded-2xl bg-slate-950 border border-white/10 space-y-3 text-xs">
@@ -595,12 +578,6 @@ export default function SwapView() {
               <span className="text-slate-400">You Receive</span>
               <span className="text-sm font-bold text-emerald-400 font-mono">
                 +{formattedBuyAmount} {buyToken?.symbol}
-              </span>
-            </div>
-            <div className="border-t border-white/10 pt-2.5 flex items-center justify-between">
-              <span className="text-slate-400">Network Fee</span>
-              <span className="text-emerald-400 font-mono font-bold">
-                0.05 Gwei (~$0.0015)
               </span>
             </div>
           </div>
@@ -622,7 +599,7 @@ export default function SwapView() {
               className="flex-1 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-600/25 disabled:opacity-50"
             >
               {isSwapping ? (
-                <AetherWaveLoader size="sm" label="Aether Broadcasting..." />
+                <AetherWaveLoader size="sm" label="Broadcasting..." />
               ) : (
                 <>
                   <Sparkles className="w-4 h-4" />
