@@ -14,12 +14,17 @@ import {
 } from "lucide-react";
 import { formatUnits, parseGwei } from "viem";
 import { useWalletStore } from "@/store/useWalletStore";
-import { getResilientPublicClient } from "@/lib/chains/config";
+import {
+  CHAIN_METADATA,
+  getResilientPublicClient,
+} from "@/lib/chains/config";
 import { fetchSwapQuote, ExtendedSwapQuote } from "@/lib/swap/aggregator";
 import {
   simulateAndEstimateTransaction,
   signAndBroadcastTransaction,
   formatRpcError,
+  checkTokenAllowance,
+  encodeErc20Approve,
 } from "@/lib/tx/engine";
 import { fetchUniversalTokenList } from "@/lib/tokens/registry";
 import { TokenAsset } from "@/types/wallet";
@@ -139,6 +144,7 @@ export default function SwapView() {
       return;
     }
 
+    const isTestnet = CHAIN_METADATA[activeChainId].isTestnet;
     const sellAmountWei = BigInt(quote.sellAmount);
     const buyAmountWei = BigInt(quote.buyAmount);
 
@@ -147,7 +153,7 @@ export default function SwapView() {
       setTxError(
         `Insufficient ${sellToken.symbol} balance. Available: ${parseFloat(
           formatUnits(sellTokenBalanceWei, sellToken.decimals)
-        ).toFixed(4)} ${sellToken.symbol}.`
+        ).toFixed(6)} ${sellToken.symbol}.`
       );
       return;
     }
@@ -157,6 +163,11 @@ export default function SwapView() {
     triggerHaptic("medium");
 
     try {
+      const client = getResilientPublicClient(
+        activeChainId,
+        customRpcs[activeChainId]
+      );
+
       const sim = await simulateAndEstimateTransaction({
         chainId: activeChainId,
         from: activeAddress,
@@ -166,82 +177,89 @@ export default function SwapView() {
         customRpc: customRpcs[activeChainId],
       });
 
+      // Step 1: On Mainnet, if selling an ERC-20 token (e.g., 0.1 USDC -> BNB), ensure router allowance is approved on-chain first
+      if (!isTestnet && sellToken.address !== "NATIVE") {
+        const currentAllowance = await checkTokenAllowance({
+          chainId: activeChainId,
+          tokenAddress: sellToken.address,
+          owner: activeAddress,
+          spender: quote.allowanceTarget,
+        }).catch(() => 0n);
+
+        if (currentAllowance < sellAmountWei) {
+          pushToast({
+            type: "info",
+            title: `Approving ${sellToken.symbol} on Blockchain...`,
+            description: "Confirming Step 1 of 2 on-chain...",
+          });
+
+          const approveData = encodeErc20Approve(
+            quote.allowanceTarget,
+            sellAmountWei
+          );
+          const approveTx = await signAndBroadcastTransaction({
+            chainId: activeChainId,
+            privateKeyHex: sessionPrivateKey,
+            to: sellToken.address,
+            value: 0n,
+            data: approveData,
+            gasLimit: 65_000n,
+            maxFeePerGas: sim.fees.normal.maxFeePerGas || parseGwei("1"),
+            maxPriorityFeePerGas:
+              sim.fees.normal.maxPriorityFeePerGas || parseGwei("1"),
+            type: "approve",
+            summary: `Approve ${sellAmount} ${sellToken.symbol} for Swap`,
+            customRpc: customRpcs[activeChainId],
+          });
+
+          addTransaction(approveTx);
+          await client.waitForTransactionReceipt({
+            hash: approveTx.hash,
+            timeout: 45_000,
+          });
+        }
+      }
+
       const formattedOut = parseFloat(
         formatUnits(buyAmountWei, buyToken.decimals)
       ).toFixed(6);
 
       const detailedSwapSummary = `Swap ${sellAmount} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} (@ 1 ${sellToken.symbol} = ${quote.price} ${buyToken.symbol})`;
 
+      // Step 2: Broadcast REAL On-Chain Swap Transaction
       const tx = await signAndBroadcastTransaction({
         chainId: activeChainId,
         privateKeyHex: sessionPrivateKey,
         to: quote.to,
         value: BigInt(quote.value),
         data: quote.data,
-        gasLimit: sim.fees.estimatedGasLimit,
-        maxFeePerGas: sim.fees.normal.maxFeePerGas || parseGwei("0.1"),
+        gasLimit: isTestnet ? 25_000n : 165_000n,
+        maxFeePerGas: sim.fees.normal.maxFeePerGas || parseGwei("1"),
         maxPriorityFeePerGas:
-          sim.fees.normal.maxPriorityFeePerGas || parseGwei("0.1"),
+          sim.fees.normal.maxPriorityFeePerGas || parseGwei("1"),
         type: "swap",
         summary: detailedSwapSummary,
         customRpc: customRpcs[activeChainId],
-        forceRelayedSettlement: Boolean(quote.isSimulatedRouterCalldata),
       });
 
-      // 1. Add transaction to Activity in `PENDING` state first!
       addTransaction(tx);
-
-      // 2. Auto-close the preview sheet immediately so it never hangs open
       setShowPreview(false);
       setIsSwapping(false);
 
       pushToast({
         type: "info",
-        title: "Swap Processing...",
-        description: `Swapping ${sellAmount} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} in Activity`,
+        title: "Swap Broadcasted On-Chain!",
+        description: `Waiting for block confirmation (${tx.hash.slice(0, 10)}...)`,
       });
 
-      // 3. CORRELATED CONFIRMATION:
-      // Wait for on-chain receipt (or 1.4s block finality for relayed swaps), THEN atomically
-      // flip Activity from `PENDING` -> `CONFIRMED` AND update the wallet token balances at the exact same moment!
-      if (!tx.isRelayedIntent) {
-        const client = getResilientPublicClient(
-          activeChainId,
-          customRpcs[activeChainId]
-        );
-        client
-          .waitForTransactionReceipt({ hash: tx.hash, timeout: 25_000 })
-          .then(async () => {
-            commitConfirmedSwap({
-              txHash: tx.hash,
-              chainId: activeChainId,
-              sellToken,
-              buyToken,
-              sellAmountWei,
-              buyAmountWei,
-            });
-            setTxSuccessHash(tx.hash);
-            triggerHaptic("success");
-            pushToast({
-              type: "success",
-              title: "Swap Confirmed!",
-              description: `+${formattedOut} ${buyToken.symbol} credited to your wallet.`,
-            });
-            await syncChainBalances(activeChainId, true);
-          })
-          .catch(() => {
-            commitConfirmedSwap({
-              txHash: tx.hash,
-              chainId: activeChainId,
-              sellToken,
-              buyToken,
-              sellAmountWei,
-              buyAmountWei,
-            });
-            setTxSuccessHash(tx.hash);
-          });
-      } else {
-        setTimeout(() => {
+      // Step 3: Wait for real on-chain block confirmation before updating balances!
+      const receipt = await client.waitForTransactionReceipt({
+        hash: tx.hash,
+        timeout: 45_000,
+      });
+
+      if (receipt.status === "success") {
+        if (isTestnet) {
           commitConfirmedSwap({
             txHash: tx.hash,
             chainId: activeChainId,
@@ -250,14 +268,23 @@ export default function SwapView() {
             sellAmountWei,
             buyAmountWei,
           });
-          setTxSuccessHash(tx.hash);
-          triggerHaptic("success");
-          pushToast({
-            type: "success",
-            title: "Swap Confirmed!",
-            description: `+${formattedOut} ${buyToken.symbol} credited to your wallet.`,
-          });
-        }, 1400);
+        } else {
+          // On Mainnet, pull the true newly minted BNB/token balance straight from the blockchain!
+          useWalletStore
+            .getState()
+            .updateTransactionStatus(tx.hash, "confirmed");
+          await syncChainBalances(activeChainId, true);
+        }
+        setTxSuccessHash(tx.hash);
+        triggerHaptic("success");
+        pushToast({
+          type: "success",
+          title: "Swap Confirmed On-Chain!",
+          description: `+${formattedOut} ${buyToken.symbol} confirmed in Block #${receipt.blockNumber.toString()}.`,
+        });
+      } else {
+        useWalletStore.getState().updateTransactionStatus(tx.hash, "failed");
+        setTxError("Swap transaction reverted on-chain.");
       }
     } catch (err: unknown) {
       setShowPreview(false);

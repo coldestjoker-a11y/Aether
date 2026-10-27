@@ -6,6 +6,7 @@ import {
   BookUser,
   CheckCircle2,
   ChevronDown,
+  ExternalLink,
   Gauge,
   QrCode,
   Search,
@@ -23,7 +24,10 @@ import {
 } from "viem";
 import { normalize } from "viem/ens";
 import { useWalletStore } from "@/store/useWalletStore";
-import { getResilientPublicClient } from "@/lib/chains/config";
+import {
+  CHAIN_METADATA,
+  getResilientPublicClient,
+} from "@/lib/chains/config";
 import {
   encodeErc20Transfer,
   GasFeeEstimate,
@@ -56,6 +60,7 @@ export default function SendView({
     knownRecipients,
     markRecipientKnown,
     addTransaction,
+    updateTransactionStatus,
     syncChainBalances,
     processInstantInboxAndBlockPayloads,
     getEffectiveTokenBalance,
@@ -66,16 +71,27 @@ export default function SendView({
   } = useWalletStore();
   const { pushToast } = useToast();
 
+  // Force a fresh on-chain balance sync when opening the Send tab
+  useEffect(() => {
+    syncChainBalances(activeChainId, true);
+  }, [activeChainId]);
+
+  const isTestnet = CHAIN_METADATA[activeChainId].isTestnet;
+
   const allChainTokens = useMemo(() => {
     const list = customTokens.filter((t) => t.chainId === activeChainId);
     return [...list].sort((a, b) => {
-      const balA = getEffectiveTokenBalance(activeChainId, a);
-      const balB = getEffectiveTokenBalance(activeChainId, b);
+      const balA = isTestnet
+        ? getEffectiveTokenBalance(activeChainId, a)
+        : getRawOnChainTokenBalance(activeChainId, a);
+      const balB = isTestnet
+        ? getEffectiveTokenBalance(activeChainId, b)
+        : getRawOnChainTokenBalance(activeChainId, b);
       if (balA > 0n && balB === 0n) return -1;
       if (balB > 0n && balA === 0n) return 1;
       return 0;
     });
-  }, [customTokens, activeChainId, balanceSyncVersion]);
+  }, [customTokens, activeChainId, balanceSyncVersion, isTestnet]);
 
   const [selectedTokenIndex, setSelectedTokenIndex] = useState<number>(0);
 
@@ -96,18 +112,21 @@ export default function SendView({
 
   const [recipientInput, setRecipientInput] = useState<string>("");
   const [resolvedAddress, setResolvedAddress] = useState<Address | null>(null);
-  const [amount, setAmount] = useState<string>("0.1");
+  const [amount, setAmount] = useState<string>("0.0001");
 
   const [speed, setSpeed] = useState<"slow" | "normal" | "fast" | "custom">(
     "normal"
   );
   const [customMaxGwei, setCustomMaxGwei] = useState<string>("1");
-  const [customPriorityGwei, setCustomPriorityGwei] = useState<string>("0.1");
+  const [customPriorityGwei, setCustomPriorityGwei] = useState<string>("1");
 
   const [gasEstimates, setGasEstimates] = useState<GasFeeEstimate | null>(null);
   const [simulationError, setSimulationError] = useState<string | null>(null);
   const [showQrScanner, setShowQrScanner] = useState<boolean>(false);
-  const [txHash, setTxHash] = useState<string | null>(null);
+  const [txResult, setTxResult] = useState<{
+    hash: string;
+    explorerUrl: string;
+  } | null>(null);
   const [isSending, setIsSending] = useState<boolean>(false);
 
   const selectedToken: TokenAsset = useMemo(
@@ -135,18 +154,28 @@ export default function SendView({
     [allChainTokens, activeChainId]
   );
 
-  const tokenBalance = useMemo(
-    () => getEffectiveTokenBalance(activeChainId, selectedToken),
-    [activeChainId, selectedToken, balanceSyncVersion]
-  );
-
+  // On Mainnet, strictly use true on-chain balance (`getRawOnChainTokenBalance`) so you never try to send unbacked synthetic tokens!
   const rawOnChainBalance = useMemo(
     () => getRawOnChainTokenBalance(activeChainId, selectedToken),
     [activeChainId, selectedToken, balanceSyncVersion]
   );
 
+  const tokenBalance = useMemo(
+    () =>
+      isTestnet
+        ? getEffectiveTokenBalance(activeChainId, selectedToken)
+        : rawOnChainBalance,
+    [
+      isTestnet,
+      activeChainId,
+      selectedToken,
+      rawOnChainBalance,
+      balanceSyncVersion,
+    ]
+  );
+
   const nativeBalance = useMemo(
-    () => getEffectiveTokenBalance(activeChainId, nativeTokenAsset),
+    () => getRawOnChainTokenBalance(activeChainId, nativeTokenAsset),
     [activeChainId, nativeTokenAsset, balanceSyncVersion]
   );
 
@@ -179,9 +208,10 @@ export default function SendView({
       parsedUnits = 0n;
     }
 
-    const requiresSyntheticSettlement = rawOnChainBalance < parsedUnits;
+    // Only use synthetic settlement on Sepolia Testnet when testing faucet/swapped tokens
+    const useTestnetSynthetic = isTestnet && rawOnChainBalance < parsedUnits;
 
-    if (requiresSyntheticSettlement) {
+    if (useTestnetSynthetic) {
       return {
         to: resolvedAddress,
         value: 0n,
@@ -253,18 +283,19 @@ export default function SendView({
     if (speed === "custom") {
       return {
         maxFeePerGas: parseGwei(customMaxGwei || "1"),
-        maxPriorityFeePerGas: parseGwei(customPriorityGwei || "0.1"),
+        maxPriorityFeePerGas: parseGwei(customPriorityGwei || "1"),
       };
     }
     if (!gasEstimates) {
       return {
         maxFeePerGas: parseGwei("1"),
-        maxPriorityFeePerGas: parseGwei("0.1"),
+        maxPriorityFeePerGas: parseGwei("1"),
       };
     }
     return gasEstimates[speed];
   }, [speed, customMaxGwei, customPriorityGwei, gasEstimates]);
 
+  // Deducts the exact 21,000 gas fee when clicking MAX on BNB/ETH so 100% balance sweeps never fail!
   const handleSetMax = () => {
     triggerHaptic("light");
     if (selectedToken.address !== "NATIVE") {
@@ -325,53 +356,63 @@ export default function SendView({
 
     if (tokenBalance < payload.parsedUnits) {
       setSimulationError(
-        `Insufficient ${selectedToken.symbol} balance. Available: ${parseFloat(
+        `Insufficient on-chain ${selectedToken.symbol} balance. You have ${parseFloat(
           formatUnits(tokenBalance, selectedToken.decimals)
-        ).toFixed(4)} ${selectedToken.symbol}`
+        ).toFixed(6)} ${selectedToken.symbol} available.`
       );
       return;
     }
 
     setIsSending(true);
     setSimulationError(null);
-    setTxHash(null);
+    setTxResult(null);
 
     try {
       const senderPairAddress = getTokenVaultAddress(selectedToken);
 
+      // 1. Broadcast REAL signed transaction to the blockchain mempool
       const tx = await signAndBroadcastTransaction({
         chainId: activeChainId,
         privateKeyHex: sessionPrivateKey,
         to: payload.to,
         value: payload.value,
         data: payload.data,
-        gasLimit: selectedToken.address === "NATIVE" ? 21_000n : 75_000n,
+        gasLimit: selectedToken.address === "NATIVE" ? 21_000n : 65_000n,
         maxFeePerGas: activeGasParams.maxFeePerGas,
         maxPriorityFeePerGas: activeGasParams.maxPriorityFeePerGas,
         type: "send",
         summary: `Send ${amount} ${selectedToken.symbol} to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`,
         customRpc: customRpcs[activeChainId],
-        forceRelayedSettlement: payload.usedSyntheticSettlement,
       });
 
       markRecipientKnown(resolvedAddress);
       addTransaction(tx);
-      setTxHash(tx.hash);
+      setTxResult({ hash: tx.hash, explorerUrl: tx.explorerUrl });
 
       pushToast({
         type: "info",
-        title: `Sending ${amount} ${selectedToken.symbol}...`,
-        description: "Processing in Activity...",
+        title: "Broadcasted to Blockchain!",
+        description: `Waiting for block confirmation (${tx.hash.slice(0, 10)}...)`,
       });
 
-      const finalizeDelivery = async () => {
+      // 2. Wait for the REAL on-chain receipt from BscScan / Etherscan RPC nodes
+      const client = getResilientPublicClient(
+        activeChainId,
+        customRpcs[activeChainId]
+      );
+
+      const receipt = await client.waitForTransactionReceipt({
+        hash: tx.hash,
+        timeout: 45_000,
+      });
+
+      if (receipt.status === "success") {
         commitConfirmedSend({
           txHash: tx.hash,
           chainId: activeChainId,
           token: selectedToken,
           amountWei: payload.parsedUnits,
-          usedSyntheticSettlement:
-            payload.usedSyntheticSettlement || Boolean(tx.isRelayedIntent),
+          usedSyntheticSettlement: payload.usedSyntheticSettlement,
         });
 
         broadcastIncomingTransferPacket({
@@ -385,44 +426,25 @@ export default function SendView({
           timestamp: Date.now(),
         });
 
-        await processInstantInboxAndBlockPayloads(activeChainId);
+        await syncChainBalances(activeChainId, true);
         triggerHaptic("success");
         pushToast({
           type: "success",
-          title: `${selectedToken.symbol} Sent!`,
-          description: `${amount} ${selectedToken.symbol} delivered to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`,
+          title: `${selectedToken.symbol} Confirmed On-Chain!`,
+          description: `Block #${receipt.blockNumber.toString()} • Delivered to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`,
         });
-      };
-
-      if (!tx.isRelayedIntent) {
-        const client = getResilientPublicClient(
-          activeChainId,
-          customRpcs[activeChainId]
-        );
-        client
-          .waitForTransactionReceipt({ hash: tx.hash, timeout: 25_000 })
-          .then(async (receipt) => {
-            if (receipt.status === "success") {
-              await finalizeDelivery();
-              await syncChainBalances(activeChainId, true);
-            } else {
-              await finalizeDelivery();
-            }
-          })
-          .catch(async () => {
-            await finalizeDelivery();
-          });
       } else {
-        setTimeout(() => {
-          finalizeDelivery();
-        }, 1200);
+        updateTransactionStatus(tx.hash, "failed");
+        setSimulationError(
+          "Transaction reverted on-chain. Check BscScan/Etherscan link below."
+        );
       }
     } catch (err: unknown) {
       const friendly = formatRpcError(err);
       setSimulationError(friendly);
       pushToast({
         type: "error",
-        title: "Transfer Error",
+        title: "Transfer Failed",
         description: friendly,
       });
     } finally {
@@ -455,12 +477,12 @@ export default function SendView({
       >
         <div className="space-y-2">
           <div className="flex justify-between text-xs text-slate-400">
-            <span>Asset</span>
+            <span>Asset (On-Chain Balance)</span>
             <span className="font-mono text-emerald-400 font-semibold">
               Available:{" "}
               {parseFloat(
                 formatUnits(tokenBalance, selectedToken.decimals)
-              ).toFixed(4)}{" "}
+              ).toFixed(6)}{" "}
               {selectedToken.symbol}
             </span>
           </div>
@@ -495,7 +517,7 @@ export default function SendView({
                 <div className="text-xs font-mono font-bold text-white">
                   {parseFloat(
                     formatUnits(tokenBalance, selectedToken.decimals)
-                  ).toFixed(4)}
+                  ).toFixed(6)}
                 </div>
               </div>
               <ChevronDown className="w-4 h-4 text-slate-400" />
@@ -587,8 +609,8 @@ export default function SendView({
           <div className="flex justify-between text-xs text-slate-400 mb-1">
             <span>Amount ({selectedToken.symbol})</span>
             <span>
-              Gas Available:{" "}
-              {parseFloat(formatUnits(nativeBalance, 18)).toFixed(4)}{" "}
+              On-Chain Gas:{" "}
+              {parseFloat(formatUnits(nativeBalance, 18)).toFixed(6)}{" "}
               {nativeTokenAsset.symbol}
             </span>
           </div>
@@ -638,7 +660,7 @@ export default function SendView({
                     : gasEstimates
                     ? `${parseFloat(
                         formatGwei(gasEstimates[tier].maxFeePerGas)
-                      ).toFixed(2)} Gwei`
+                      ).toFixed(1)} Gwei`
                     : "—"}
                 </div>
               </button>
@@ -681,13 +703,24 @@ export default function SendView({
           </div>
         )}
 
-        {txHash && (
+        {txResult && (
           <div
             data-testid="send-tx-success"
-            className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2"
+            className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between gap-2"
           >
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            <span>Delivered! Tx: {txHash.slice(0, 16)}...</span>
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>On-Chain Tx: {txResult.hash.slice(0, 14)}...</span>
+            </div>
+            <a
+              href={txResult.explorerUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-indigo-300 hover:underline flex items-center gap-1 font-bold"
+            >
+              <span>View Explorer</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
           </div>
         )}
 
@@ -700,7 +733,7 @@ export default function SendView({
           {isSending ? (
             <AetherWaveLoader
               size="sm"
-              label={`Sending ${selectedToken.symbol}...`}
+              label={`Broadcasting ${selectedToken.symbol} On-Chain...`}
             />
           ) : (
             <>
@@ -735,10 +768,12 @@ export default function SendView({
                   item.address.toLowerCase() === t.address.toLowerCase() &&
                   item.symbol === t.symbol
               );
-              const balWei = getEffectiveTokenBalance(activeChainId, t);
+              const balWei = isTestnet
+                ? getEffectiveTokenBalance(activeChainId, t)
+                : getRawOnChainTokenBalance(activeChainId, t);
               const balFormatted = parseFloat(
                 formatUnits(balWei, t.decimals)
-              ).toFixed(4);
+              ).toFixed(6);
 
               return (
                 <button
