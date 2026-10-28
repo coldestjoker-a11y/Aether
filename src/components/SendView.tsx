@@ -295,7 +295,7 @@ export default function SendView({
     return gasEstimates[speed];
   }, [speed, customMaxGwei, customPriorityGwei, gasEstimates]);
 
-  // Deducts the exact 21,000 gas fee when clicking MAX on BNB/ETH so 100% balance sweeps never fail!
+  // Use dynamic estimatedGasLimit (65,000 for contract recipients, 21,000 for EOA wallets)
   const handleSetMax = () => {
     triggerHaptic("light");
     if (selectedToken.address !== "NATIVE") {
@@ -303,7 +303,8 @@ export default function SendView({
       return;
     }
 
-    const gasLimit = 21_000n;
+    // Use dynamic estimatedGasLimit (65,000 for contract recipients, 21,000 for EOA wallets)
+    const gasLimit = gasEstimates?.estimatedGasLimit ?? 65_000n;
     const reserveFee = gasLimit * activeGasParams.maxFeePerGas;
     const maxSendable =
       tokenBalance > reserveFee ? tokenBalance - reserveFee : 0n;
@@ -377,7 +378,7 @@ export default function SendView({
         to: payload.to,
         value: payload.value,
         data: payload.data,
-        gasLimit: selectedToken.address === "NATIVE" ? 21_000n : 65_000n,
+        gasLimit: gasEstimates?.estimatedGasLimit ?? 65_000n,
         maxFeePerGas: activeGasParams.maxFeePerGas,
         maxPriorityFeePerGas: activeGasParams.maxPriorityFeePerGas,
         type: "send",
