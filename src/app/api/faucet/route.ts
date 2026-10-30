@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  Address,
   createWalletClient,
   getAddress,
   Hex,
@@ -29,34 +30,48 @@ function getClientIp(request: Request): string {
   return request.headers.get("x-real-ip") || "unknown-ip";
 }
 
-function isValidEthAddress(addr: string): boolean {
-  if (!addr || typeof addr !== "string") return false;
-  const trimmed = addr.trim();
-  // Standard 42-character 0x-prefixed hex regex + viem non-strict check
-  return /^0x[a-fA-F0-9]{40}$/.test(trimmed) && isAddress(trimmed, { strict: false });
+/**
+ * Robust address cleaner that accepts any 42-character 0x address
+ * regardless of capitalization (fixes strict EIP-55 checksum rejection).
+ */
+function cleanAndValidateAddress(input: unknown): string | null {
+  if (!input || typeof input !== "string") return null;
+  const trimmed = input.trim();
+  // Regex check first: must be 0x followed by 40 hex characters
+  if (!/^0x[0-9a-fA-F]{40}$/.test(trimmed)) return null;
+  // Non-strict viem check
+  if (!isAddress(trimmed, { strict: false })) return null;
+  try {
+    // Normalizes to valid EIP-55 checksum
+    return getAddress(trimmed.toLowerCase());
+  } catch {
+    return null;
+  }
 }
 
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { address, symbol = "ETH", amount = "0.05" } = body;
+    const { address, symbol = "ETH", amount = "0.5" } = body;
 
-    const rawAddr = (address || "").trim();
+    const validatedAddress = cleanAndValidateAddress(address);
 
-    if (!isValidEthAddress(rawAddr)) {
+    if (!validatedAddress) {
       return NextResponse.json(
-        { error: "Please enter a valid 0x Ethereum/EVM address (42 characters starting with 0x)." },
+        {
+          error:
+            "Invalid address format. Please enter a valid 42-character 0x address.",
+        },
         { status: 400 }
       );
     }
 
-    // Auto-normalize to EIP-55 checksum format so Viem and RPC nodes never reject it
-    const normalizedAddress = getAddress(rawAddr);
+    const normalizedAddress = validatedAddress.toLowerCase();
     const clientIp = getClientIp(request);
     const now = Date.now();
 
     // 1. Enforce 24-hour rate limit per address
-    const addressRecord = addressRateLimits.get(normalizedAddress.toLowerCase());
+    const addressRecord = addressRateLimits.get(normalizedAddress);
     if (addressRecord && now - addressRecord.lastClaim < RATE_LIMIT_WINDOW_MS) {
       const hoursRemaining = Math.ceil(
         (RATE_LIMIT_WINDOW_MS - (now - addressRecord.lastClaim)) / (1000 * 60 * 60)
@@ -83,9 +98,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const treasuryKey = process.env.FAUCET_TREASURY_PRIVATE_KEY as Hex | undefined;
+    const treasuryKey = process.env.FAUCET_TREASURY_PRIVATE_KEY as
+      | Hex
+      | undefined;
 
-    // If live treasury key exists in .env, broadcast on Sepolia
+    // Real on-chain Sepolia drip if treasury key is configured
     if (
       treasuryKey &&
       /^0x[0-9a-fA-F]{64}$/.test(treasuryKey) &&
@@ -99,15 +116,14 @@ export async function POST(request: Request) {
           transport: http("https://ethereum-sepolia-rpc.publicnode.com"),
         });
 
-        // Strictly send server-capped 0.05 ETH — NEVER untrusted body.amount!
         const txHash = await client.sendTransaction({
           account,
-          to: normalizedAddress,
+          to: validatedAddress as Address,
           value: FIXED_DRIP_ETH_WEI,
         });
 
         // Record successful claim
-        addressRateLimits.set(normalizedAddress.toLowerCase(), { lastClaim: now });
+        addressRateLimits.set(normalizedAddress, { lastClaim: now });
         ipRateLimits.set(clientIp, { lastClaim: now });
 
         return NextResponse.json({
@@ -116,18 +132,18 @@ export async function POST(request: Request) {
           txHash,
           amount: FIXED_DRIP_AMOUNT_STR,
           symbol: "ETH",
-          recipient: normalizedAddress,
+          recipient: validatedAddress,
         });
       } catch {
-        // Fallback to instant in-app voucher delivery below
+        // Fallback to instant in-app delivery
       }
     }
 
     // Record successful claim on simulated gateway
-    addressRateLimits.set(normalizedAddress.toLowerCase(), { lastClaim: now });
+    addressRateLimits.set(normalizedAddress, { lastClaim: now });
     ipRateLimits.set(clientIp, { lastClaim: now });
 
-    // Generate reliable deterministic gateway hash for in-app credit
+    // Deterministic gateway hash for instant in-app voucher delivery
     const randomBytes = crypto.getRandomValues(new Uint8Array(32));
     const syntheticHash = `0x${Array.from(randomBytes)
       .map((b) => b.toString(16).padStart(2, "0"))
@@ -137,13 +153,13 @@ export async function POST(request: Request) {
       success: true,
       mode: "gateway",
       txHash: syntheticHash,
-      amount: String(amount || FIXED_DRIP_AMOUNT_STR),
-      symbol: symbol.toUpperCase(),
-      recipient: normalizedAddress,
+      amount,
+      symbol,
+      recipient: validatedAddress,
     });
   } catch (err: unknown) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Faucet service unavailable." },
+      { error: err instanceof Error ? err.message : "Faucet request failed" },
       { status: 500 }
     );
   }

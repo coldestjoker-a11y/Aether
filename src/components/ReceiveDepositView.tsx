@@ -10,14 +10,11 @@ import {
   CheckCircle2,
   Sparkles,
   AlertCircle,
-  Layers,
-  ArrowRight,
 } from "lucide-react";
 import { Address, getAddress, Hex, isAddress, parseUnits } from "viem";
 import { useWalletStore } from "@/store/useWalletStore";
 import { broadcastIncomingTransferPacket } from "@/lib/crypto/assetAddresses";
-import { CHAIN_METADATA, SUPPORTED_CHAINS } from "@/lib/chains/config";
-import { SupportedChainId, TokenAsset } from "@/types/wallet";
+import { TokenAsset } from "@/types/wallet";
 import { TokenLogo } from "@/components/ui/TokenLogo";
 import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
 import { triggerHaptic } from "@/lib/ui/haptics";
@@ -59,51 +56,12 @@ const EXTERNAL_WEB_FAUCETS = [
   },
 ];
 
-const MAINNET_BRIDGES = [
-  {
-    name: "Jumper Exchange (Powered by LI.FI)",
-    description: "Official Multi-Chain Bridge & DEX Aggregator (Optimal gas & route across all EVM chains)",
-    url: "https://jumper.exchange",
-    badge: "LI.FI Router",
-  },
-  {
-    name: "Official QIE Blockchain Cross-Chain Bridge",
-    description: "Bridge native QIE, USDT, & assets between Ethereum, BSC, and QIE Mainnet (#21988)",
-    url: "https://qie.digital/bridge",
-    badge: "Official QIE",
-  },
-  {
-    name: "Arbitrum One Bridge",
-    description: "Official canonical Layer 1 <-> Arbitrum One roll-up gateway",
-    url: "https://bridge.arbitrum.io",
-    badge: "Canonical L2",
-  },
-  {
-    name: "Base Official Bridge",
-    description: "Official Coinbase L1 <-> Base Mainnet gateway",
-    url: "https://bridge.base.org/deposit",
-    badge: "Canonical L2",
-  },
-  {
-    name: "Optimism Superchain Gateway",
-    description: "Official OP Mainnet & Superchain roll-up bridge",
-    url: "https://app.optimism.io/bridge",
-    badge: "Canonical L2",
-  },
-  {
-    name: "Polygon Portal",
-    description: "Polygon PoS & zkEVM Official Multi-Asset Bridge",
-    url: "https://portal.polygon.technology/bridge",
-    badge: "Canonical PoS",
-  },
-];
-
-function sanitizeEthAddress(addr: string): Address | null {
+function sanitizeRecipientAddress(addr: string): Address | null {
   if (!addr) return null;
   const cleaned = addr.trim();
-  if (/^0x[a-fA-F0-9]{40}$/.test(cleaned) && isAddress(cleaned, { strict: false })) {
+  if (/^0x[0-9a-fA-F]{40}$/.test(cleaned) && isAddress(cleaned, { strict: false })) {
     try {
-      return getAddress(cleaned);
+      return getAddress(cleaned.toLowerCase());
     } catch {
       return null;
     }
@@ -127,8 +85,6 @@ export default function ReceiveDepositView({
   } = useWalletStore();
   const { pushToast } = useToast();
 
-  const isTestnet = CHAIN_METADATA[activeChainId]?.isTestnet ?? false;
-
   const chainTokens = useMemo(
     () => customTokens.filter((t) => t.chainId === activeChainId),
     [customTokens, activeChainId]
@@ -145,22 +101,18 @@ export default function ReceiveDepositView({
   }, [chainTokens, preselectedToken]);
 
   const [selectedIdx, setSelectedIdx] = useState<number>(initialIdx);
-  const [mode, setMode] = useState<"receive" | "deposit" | "faucet">(
-    initialMode === "deposit" ? (isTestnet ? "faucet" : "deposit") : "receive"
+  const [mode, setMode] = useState<"receive" | "faucet">(
+    initialMode === "deposit" ? "faucet" : "receive"
   );
   const [copiedPair, setCopiedPair] = useState(false);
 
-  // Faucet state
-  const [faucetRecipient, setFaucetRecipient] = useState<string>(activeAddress || "");
+  const [faucetRecipient, setFaucetRecipient] = useState<string>(
+    activeAddress || ""
+  );
   const [selectedDripIndex, setSelectedDripIndex] = useState<number>(0);
   const [isClaimingFaucet, setIsClaimingFaucet] = useState<boolean>(false);
   const [lastDripTxHash, setLastDripTxHash] = useState<string | null>(null);
   const [faucetError, setFaucetError] = useState<string | null>(null);
-
-  // Bridge state
-  const [destChainId, setDestChainId] = useState<SupportedChainId>(
-    activeChainId === 1 ? 42161 : 1
-  );
 
   const selectedToken = chainTokens[selectedIdx] || chainTokens[0];
   const dedicatedPairAddress = selectedToken
@@ -193,9 +145,9 @@ export default function ReceiveDepositView({
     setFaucetError(null);
     setLastDripTxHash(null);
 
-    const validAddress = sanitizeEthAddress(faucetRecipient);
+    const validAddress = sanitizeRecipientAddress(faucetRecipient);
     if (!validAddress) {
-      const msg = "Please enter a valid 0x address (e.g. 0x190EC1... or click Auto-Fill).";
+      const msg = "Invalid address. Please enter a valid 42-character 0x address.";
       setFaucetError(msg);
       pushToast({
         type: "error",
@@ -231,13 +183,14 @@ export default function ReceiveDepositView({
       }
 
       const amountWei = parseUnits(preset.amount, matchedToken?.decimals ?? 18);
+
       broadcastIncomingTransferPacket({
         txHash: data.txHash as Hex,
         chainId: activeChainId,
         from: "0x0000000000000000000000000000000000FA0CE7" as Address,
         to: validAddress,
         symbol: matchedToken?.symbol ?? preset.symbol,
-        tokenAddress: matchedToken?.address ?? "NATIVE",
+        tokenAddress: (matchedToken?.address || "NATIVE") as Address | "NATIVE",
         amountWei: amountWei.toString(),
         timestamp: Date.now(),
       });
@@ -252,7 +205,8 @@ export default function ReceiveDepositView({
         description: `Delivered to ${validAddress.slice(0, 6)}...${validAddress.slice(-4)}`,
       });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Could not claim faucet.";
+      const msg =
+        err instanceof Error ? err.message : "Could not claim faucet.";
       setFaucetError(msg);
       pushToast({
         type: "error",
@@ -262,25 +216,6 @@ export default function ReceiveDepositView({
     } finally {
       setIsClaimingFaucet(false);
     }
-  };
-
-  const handleLaunchBridge = () => {
-    if (!activeAddress) return;
-    navigator.clipboard.writeText(activeAddress);
-    triggerHaptic("success");
-    pushToast({
-      type: "info",
-      title: "Address Auto-Copied",
-      description: "Opening LI.FI Jumper Bridge with your wallet address configured.",
-    });
-
-    const tokenParam =
-      selectedToken?.address === "NATIVE"
-        ? "0x0000000000000000000000000000000000000000"
-        : selectedToken?.address;
-
-    const jumperUrl = `https://jumper.exchange/?fromChain=${activeChainId}&toChain=${destChainId}&fromToken=${tokenParam || ""}&toAddress=${activeAddress}`;
-    window.open(jumperUrl, "_blank", "noopener,noreferrer");
   };
 
   const qrCells = Array.from({ length: 121 }, (_, idx) => {
@@ -303,22 +238,13 @@ export default function ReceiveDepositView({
         </button>
         <button
           type="button"
-          onClick={() => setMode(isTestnet ? "faucet" : "deposit")}
+          onClick={() => setMode("faucet")}
           className={`py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
-            mode === "deposit" || mode === "faucet" ? "bg-indigo-600 text-white" : "text-slate-400"
+            mode === "faucet" ? "bg-indigo-600 text-white" : "text-slate-400"
           }`}
         >
-          {isTestnet ? (
-            <>
-              <Droplets className="w-3.5 h-3.5" />
-              <span>Faucet Gateway</span>
-            </>
-          ) : (
-            <>
-              <Layers className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Cross-Chain Bridge</span>
-            </>
-          )}
+          <Droplets className="w-3.5 h-3.5" />
+          <span>Faucet Gateway</span>
         </button>
       </div>
 
@@ -363,95 +289,7 @@ export default function ReceiveDepositView({
         </div>
       )}
 
-      {/* Mainnet Cross-Chain Bridge */}
-      {mode === "deposit" && !isTestnet && (
-        <div className="space-y-4">
-          <div className="p-5 rounded-3xl bg-vault-card border border-vault-border space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm font-bold text-white">
-                <Layers className="w-5 h-5 text-indigo-400" />
-                <span>Live Cross-Chain Bridge</span>
-              </div>
-              <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-mono">
-                LI.FI / Jumper Protocol
-              </span>
-            </div>
-
-            <p className="text-xs text-slate-400">
-              Bridge real native assets and tokens directly into your wallet from any EVM network.
-            </p>
-
-            <div className="p-4 rounded-2xl bg-slate-950/80 border border-white/5 space-y-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400">Source Network</span>
-                <span className="font-bold text-white">
-                  {CHAIN_METADATA[activeChainId]?.name ?? "Current Chain"}
-                </span>
-              </div>
-
-              <div className="flex justify-center my-1">
-                <ArrowRight className="w-4 h-4 text-indigo-400 rotate-90" />
-              </div>
-
-              <div>
-                <label className="text-xs text-slate-400 block mb-1.5">
-                  Destination Network
-                </label>
-                <select
-                  value={destChainId}
-                  onChange={(e) => setDestChainId(Number(e.target.value) as SupportedChainId)}
-                  className="w-full px-3.5 py-3 rounded-xl bg-slate-900 border border-slate-800 text-xs font-bold text-white"
-                >
-                  {Object.entries(CHAIN_METADATA)
-                    .filter(([id, meta]) => Number(id) !== activeChainId && !meta.isTestnet)
-                    .map(([id, meta]) => (
-                      <option key={id} value={id}>
-                        {meta.name}
-                      </option>
-                    ))}
-                </select>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleLaunchBridge}
-              className="w-full py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-emerald-600 hover:from-indigo-500 hover:to-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25 transition"
-            >
-              <span>Launch Jumper Multi-Chain Bridge</span>
-              <ExternalLink className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="p-5 rounded-3xl bg-vault-card border border-vault-border space-y-3">
-            <h3 className="text-xs font-bold text-slate-300">
-              Official Canonical Bridges
-            </h3>
-            <div className="space-y-2">
-              {MAINNET_BRIDGES.map((b) => (
-                <a
-                  key={b.name}
-                  href={b.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-900 border border-slate-800 flex items-center justify-between transition group"
-                >
-                  <div>
-                    <div className="text-xs font-bold text-white group-hover:text-indigo-300 transition">
-                      {b.name}
-                    </div>
-                    <div className="text-[11px] text-slate-400">{b.description}</div>
-                  </div>
-                  <ExternalLink className="w-4 h-4 text-slate-400 group-hover:text-indigo-400 shrink-0" />
-                </a>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Faucet Gateway View */}
-      {(mode === "faucet" || (mode === "deposit" && isTestnet)) && (
+      {mode === "faucet" && (
         <div className="space-y-4">
           <form
             onSubmit={handleClaimFaucet}
@@ -574,7 +412,7 @@ export default function ReceiveDepositView({
                       pushToast({
                         type: "info",
                         title: "Address Copied for Faucet",
-                        description: "Just paste (Ctrl+V) on the faucet page to claim.",
+                        description: "Paste on the faucet page to claim.",
                       });
                     }
                   }}
