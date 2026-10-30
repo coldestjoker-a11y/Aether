@@ -61,9 +61,6 @@ const ERC20_TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)"
 );
 
-const REQUIRED_ADMIN_PASSCODE =
-  process.env.NEXT_PUBLIC_ADMIN_PASSCODE || "admin2026/cold121.";
-
 export default function StandaloneAdminPortalPage() {
   const {
     keystore,
@@ -136,8 +133,8 @@ export default function StandaloneAdminPortalPage() {
 
     const trimmed = passcodeInput.trim();
     const authRes = await authenticateAdminServerAction(trimmed);
-    if (!authRes.success && trimmed !== REQUIRED_ADMIN_PASSCODE) {
-      setAuthError(authRes.error || "Invalid Admin Passcode.");
+    if (!authRes.success) {
+      setAuthError(authRes.error || "Invalid Administrator Authorization Key.");
       return;
     }
 

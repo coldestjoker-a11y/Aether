@@ -113,7 +113,8 @@ class RealtimePriceStream {
     if (FALLBACK_SYMBOL_USD[sym]) {
       return FALLBACK_SYMBOL_USD[sym];
     }
-    return { price: 1.0, change24h: 0.0 };
+    // Return 0 for unknown tokens to prevent unpriced tokens being evaluated as $1.00
+    return { price: 0, change24h: 0.0 };
   }
 
   /**

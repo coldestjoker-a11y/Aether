@@ -298,6 +298,45 @@ export const DEFAULT_TOKENS: TokenAsset[] = [
   },
 ];
 
+/**
+ * Strict validator for custom RPC endpoints.
+ * Blocks SSRF vectors, plain http, javascript:, and private RFC 1918 / loopback IP ranges.
+ */
+export function isValidRpcUrl(urlString: string): { valid: boolean; error?: string } {
+  try {
+    const trimmed = urlString.trim();
+    if (!trimmed) {
+      return { valid: false, error: "RPC URL cannot be empty." };
+    }
+    const url = new URL(trimmed);
+    if (url.protocol !== "https:" && url.protocol !== "wss:") {
+      return {
+        valid: false,
+        error: "Custom RPC must strictly use secure https:// or wss:// protocols.",
+      };
+    }
+    const host = url.hostname.toLowerCase();
+    if (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host === "0.0.0.0" ||
+      host.startsWith("10.") ||
+      host.startsWith("192.168.") ||
+      host.startsWith("169.254.") ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+    ) {
+      return {
+        valid: false,
+        error: "Access to loopback or private internal IP addresses is prohibited.",
+      };
+    }
+    return { valid: true };
+  } catch {
+    return { valid: false, error: "Invalid URL structure." };
+  }
+}
+
 function getRpcTransports(
   chainId: SupportedChainId,
   customRpc?: string
@@ -307,7 +346,7 @@ function getRpcTransports(
   const httpUrls: string[] = [];
   const wssUrls: string[] = [];
 
-  if (customRpc) {
+  if (customRpc && isValidRpcUrl(customRpc).valid) {
     if (customRpc.startsWith("wss://")) wssUrls.push(customRpc);
     else httpUrls.push(customRpc);
   }

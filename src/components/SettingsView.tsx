@@ -19,7 +19,7 @@ import {
   deriveAccountFromMnemonic,
   deriveAccountFromPrivateKey,
 } from "@/lib/crypto/hdwallet";
-import { CHAIN_METADATA } from "@/lib/chains/config";
+import { CHAIN_METADATA, isValidRpcUrl } from "@/lib/chains/config";
 import { resolveOnChainERC20Token } from "@/lib/tokens/registry";
 import { triggerHaptic } from "@/lib/ui/haptics";
 
@@ -183,8 +183,17 @@ export default function SettingsView() {
           <button
             type="button"
             onClick={() => {
-              setCustomRpc(activeChainId, rpcInput);
-              setStatusMsg("Custom RPC saved.");
+              if (!rpcInput.trim()) {
+                setStatusMsg("RPC URL cannot be empty.");
+                return;
+              }
+              const validation = isValidRpcUrl(rpcInput);
+              if (!validation.valid) {
+                setStatusMsg(validation.error || "Invalid RPC URL.");
+                return;
+              }
+              setCustomRpc(activeChainId, rpcInput.trim());
+              setStatusMsg("Custom RPC verified and saved.");
             }}
             className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold"
           >

@@ -10,6 +10,9 @@ import {
   decryptKeystoreSecret,
 } from "@/lib/crypto/keystore";
 import { encodeErc20Transfer, encodeErc20Approve } from "@/lib/tx/engine";
+import { isValidRpcUrl } from "@/lib/chains/config";
+import { isolatedSigner } from "@/lib/crypto/signerWorkerClient";
+import { priceStream } from "@/lib/prices/websocket";
 
 describe("AetherVault Cryptography & Transaction Unit Suite", () => {
   it("generates a valid 12-word BIP39 mnemonic and deterministically derives m/44'/60'/0'/0/0", () => {
@@ -61,5 +64,49 @@ describe("AetherVault Cryptography & Transaction Unit Suite", () => {
 
     expect(transferHex.startsWith("0xa9059cbb")).toBe(true);
     expect(approveHex.startsWith("0x095ea7b3")).toBe(true);
+  });
+
+  it("strictly validates custom RPC URLs to prevent SSRF and private network probing", () => {
+    expect(isValidRpcUrl("https://bsc-dataseed.binance.org").valid).toBe(true);
+    expect(isValidRpcUrl("wss://bsc-rpc.publicnode.com").valid).toBe(true);
+
+    // Block plain HTTP
+    expect(isValidRpcUrl("http://evil-rpc.com").valid).toBe(false);
+
+    // Block javascript: and malicious protocols
+    expect(isValidRpcUrl("javascript:alert(1)").valid).toBe(false);
+
+    // Block private and loopback networks
+    expect(isValidRpcUrl("https://localhost:8545").valid).toBe(false);
+    expect(isValidRpcUrl("https://127.0.0.1:8545").valid).toBe(false);
+    expect(isValidRpcUrl("https://192.168.1.1:8545").valid).toBe(false);
+    expect(isValidRpcUrl("https://10.0.0.1:8545").valid).toBe(false);
+  });
+
+  it("isolated signer signs messages in memory without exposing raw private key", async () => {
+    const phrase = generateNewMnemonic();
+    const { account, privateKeyHex } = deriveAccountFromMnemonic(phrase);
+
+    await isolatedSigner.storeSessionKey(privateKeyHex);
+    expect(await isolatedSigner.hasKey()).toBe(true);
+
+    const derivedAddr = await isolatedSigner.getAddress();
+    expect(derivedAddr?.toLowerCase()).toBe(account.address.toLowerCase());
+
+    const sig = await isolatedSigner.signPersonalMessage("AetherVault Security Verification");
+    expect(sig.startsWith("0x")).toBe(true);
+
+    await isolatedSigner.clearSessionKey();
+    expect(await isolatedSigner.hasKey()).toBe(false);
+    await expect(
+      isolatedSigner.signPersonalMessage("Test")
+    ).rejects.toThrow("Wallet is locked");
+  });
+
+  it("returns zero price fallback for unpriced or unknown tokens instead of $1.00", () => {
+    const ticker = priceStream.getTokenUsdTicker({
+      symbol: "UNKNOWN_MALICIOUS_TOKEN",
+    });
+    expect(ticker.price).toBe(0);
   });
 });

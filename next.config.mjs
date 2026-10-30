@@ -26,7 +26,10 @@ const cspHeader = `
       https://api.coingecko.com
       wss://stream.binance.com:9443
       https://*.walletconnect.com wss://*.walletconnect.com
-      https://*.walletconnect.org wss://*.walletconnect.org;
+      https://*.walletconnect.org wss://*.walletconnect.org
+      https://*.binance.org
+      https://*.defibit.io
+      https://*.llamarpc.com;
     object-src 'none';
     base-uri 'self';
     form-action 'self';

@@ -13,6 +13,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   CHAIN_METADATA,
   getResilientPublicClient,
+  isValidRpcUrl,
   SUPPORTED_CHAINS,
 } from "@/lib/chains/config";
 import { SupportedChainId, WalletTransaction } from "@/types/wallet";
@@ -202,7 +203,7 @@ function buildFallbackWalletTransport(
   const infuraKey = process.env.NEXT_PUBLIC_INFURA_KEY;
   const urls: string[] = [];
 
-  if (customRpc) urls.push(customRpc);
+  if (customRpc && isValidRpcUrl(customRpc).valid) urls.push(customRpc);
 
   if (chainId === 56) {
     urls.push(

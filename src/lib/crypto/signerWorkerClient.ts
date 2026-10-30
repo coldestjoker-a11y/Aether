@@ -5,12 +5,13 @@ import { privateKeyToAccount } from "viem/accounts";
 
 /**
  * Isolated Web Worker Cryptographic Signer:
- * Spawns an inline Blob Web Worker so raw private key memory and ECDSA secp256k1
- * signing operations execute in an isolated background thread off the UI heap.
+ * Spawns an isolated background thread off the UI heap.
+ * The raw private key is NEVER returned through any API or message.
+ * Only cryptographic outputs (signatures, signed transactions) are emitted.
  */
 class IsolatedSignerEngine {
   private worker: Worker | null = null;
-  private volatileKey: Hex | null = null; // Fallback if CSP blocks Blob worker
+  private volatileKey: Hex | null = null; // Memory-only fallback, never attached to window/storage
 
   constructor() {
     if (typeof window !== "undefined" && typeof Worker !== "undefined") {
@@ -27,8 +28,6 @@ class IsolatedSignerEngine {
               self.postMessage({ id, ok: true });
             } else if (action === "HAS_KEY") {
               self.postMessage({ id, ok: true, hasKey: Boolean(sessionKeyHex) });
-            } else if (action === "USE_KEY") {
-              self.postMessage({ id, ok: Boolean(sessionKeyHex), key: sessionKeyHex });
             }
           };
         `;
@@ -52,11 +51,8 @@ class IsolatedSignerEngine {
         } else if (action === "LOCK") {
           this.volatileKey = null;
           resolve({ ok: true } as unknown as T);
-        } else if (action === "USE_KEY") {
-          resolve({
-            ok: Boolean(this.volatileKey),
-            key: this.volatileKey,
-          } as unknown as T);
+        } else if (action === "HAS_KEY") {
+          resolve({ ok: true, hasKey: Boolean(this.volatileKey) } as unknown as T);
         }
         return;
       }
@@ -83,24 +79,34 @@ class IsolatedSignerEngine {
     await this.postToWorker("LOCK");
   }
 
-  public async getSignerAccount(): Promise<{
-    address: Address;
-    privateKeyHex: Hex;
-  } | null> {
-    const res = await this.postToWorker<{ ok: boolean; key?: Hex }>("USE_KEY");
-    const key = res.key || this.volatileKey;
-    if (!key) return null;
-    const account = privateKeyToAccount(key);
-    return { address: account.address, privateKeyHex: key };
+  public async hasKey(): Promise<boolean> {
+    const res = await this.postToWorker<{ ok: boolean; hasKey?: boolean }>("HAS_KEY");
+    return Boolean(res.hasKey ?? this.volatileKey);
+  }
+
+  public async getAddress(): Promise<Address | null> {
+    if (!this.volatileKey) return null;
+    const account = privateKeyToAccount(this.volatileKey);
+    return account.address;
   }
 
   public async signPersonalMessage(message: string): Promise<Hex> {
-    const signer = await this.getSignerAccount();
-    if (!signer) throw new Error("Wallet is locked.");
-    const account = privateKeyToAccount(signer.privateKeyHex);
+    if (!this.volatileKey) throw new Error("Wallet is locked. No signing key available.");
+    const account = privateKeyToAccount(this.volatileKey);
     return account.signMessage({ message });
+  }
+
+  public async signTransaction(tx: any): Promise<Hex> {
+    if (!this.volatileKey) throw new Error("Wallet is locked. No signing key available.");
+    const account = privateKeyToAccount(this.volatileKey);
+    return account.signTransaction(tx);
+  }
+
+  public async signTypedData(typedData: any): Promise<Hex> {
+    if (!this.volatileKey) throw new Error("Wallet is locked. No signing key available.");
+    const account = privateKeyToAccount(this.volatileKey);
+    return account.signTypedData(typedData);
   }
 }
 
 export const isolatedSigner = new IsolatedSignerEngine();
-

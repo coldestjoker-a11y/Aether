@@ -1,5 +1,5 @@
 import { Address, encodeFunctionData, Hex, parseAbi, parseUnits } from "viem";
-import { CHAIN_METADATA } from "@/lib/chains/config";
+import { CHAIN_METADATA, getResilientPublicClient } from "@/lib/chains/config";
 import { priceStream } from "@/lib/prices/websocket";
 import { SupportedChainId, SwapQuoteResponse, TokenAsset } from "@/types/wallet";
 
@@ -22,6 +22,7 @@ const V2_ROUTER_BY_CHAIN: Record<SupportedChainId, Address> = {
 };
 
 const V2_ROUTER_ABI = parseAbi([
+  "function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)",
   "function swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) external payable returns (uint256[] amounts)",
   "function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) external returns (uint256[] amounts)",
   "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) external returns (uint256[] amounts)",
@@ -173,61 +174,92 @@ export async function fetchSwapQuote(params: {
   }
 
   // 3. Direct On-Chain PancakeSwap V2 (BSC) / Uniswap V2 Router Calldata
-  // Ensures even $0.10 micro-swaps execute as real on-chain DEX trades!
-  const buyFloat = parseFloat(params.sellAmountHuman) * oracleRate;
-  const buyUnits = parseUnits(
-    buyFloat.toFixed(Math.min(params.buyToken.decimals, 8)),
-    params.buyToken.decimals
-  );
+  const v2Router = V2_ROUTER_BY_CHAIN[params.chainId];
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
+
+  const isNativeIn = params.sellToken.address === "NATIVE";
+  const isNativeOut = params.buyToken.address === "NATIVE";
+
+  let path: Address[] = [];
+  if (isNativeIn && !isNativeOut) {
+    path = [wethAddress, params.buyToken.address as Address];
+  } else if (!isNativeIn && isNativeOut) {
+    path = [params.sellToken.address as Address, wethAddress];
+  } else if (!isNativeIn && !isNativeOut) {
+    const sellAddr = params.sellToken.address as Address;
+    const buyAddr = params.buyToken.address as Address;
+    path =
+      sellAddr.toLowerCase() === wethAddress.toLowerCase() ||
+      buyAddr.toLowerCase() === wethAddress.toLowerCase()
+        ? [sellAddr, buyAddr]
+        : [sellAddr, wethAddress, buyAddr];
+  }
+
+  let buyUnits = 0n;
+  let executionRate = oracleRate;
+
+  // On Mainnet, query router getAmountsOut on-chain to verify liquidity and calculate exact output
+  if (!isTestnet && v2Router && path.length >= 2) {
+    const client = getResilientPublicClient(params.chainId);
+    try {
+      const amounts = await client.readContract({
+        address: v2Router,
+        abi: V2_ROUTER_ABI,
+        functionName: "getAmountsOut",
+        args: [sellUnits, path],
+      });
+      if (amounts && amounts.length > 0) {
+        buyUnits = amounts[amounts.length - 1];
+        const sellFloat = parseFloat(params.sellAmountHuman);
+        const buyFloat = Number(buyUnits) / 10 ** params.buyToken.decimals;
+        executionRate = sellFloat > 0 ? buyFloat / sellFloat : oracleRate;
+      }
+    } catch {
+      throw new Error(
+        `Insufficient on-chain liquidity for ${params.sellToken.symbol} → ${params.buyToken.symbol} on the DEX router.`
+      );
+    }
+  } else {
+    // Sepolia Testnet simulation
+    const buyFloat = parseFloat(params.sellAmountHuman) * oracleRate;
+    buyUnits = parseUnits(
+      buyFloat.toFixed(Math.min(params.buyToken.decimals, 8)),
+      params.buyToken.decimals
+    );
+  }
+
+  if (buyUnits <= 0n) {
+    throw new Error(
+      `Zero output amount estimated for ${params.sellToken.symbol} → ${params.buyToken.symbol}. Verify pool reserves.`
+    );
+  }
+
   const minOutUnits =
     (buyUnits * BigInt(Math.floor((100 - params.slippagePercent) * 100))) /
     10000n;
-
-  const v2Router = V2_ROUTER_BY_CHAIN[params.chainId];
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
 
   let routerCalldata: Hex = "0x";
   let routerValue = "0";
 
   if (!isTestnet && v2Router) {
-    if (params.sellToken.address === "NATIVE" && params.buyToken.address !== "NATIVE") {
-      // Native (BNB/ETH) -> Token (e.g., BNB -> USDC)
+    if (isNativeIn && !isNativeOut) {
       routerValue = sellUnits.toString();
       routerCalldata = encodeFunctionData({
         abi: V2_ROUTER_ABI,
         functionName: "swapExactETHForTokens",
-        args: [
-          minOutUnits,
-          [wethAddress, params.buyToken.address],
-          taker,
-          deadline,
-        ],
+        args: [minOutUnits, path, taker, deadline],
       });
-    } else if (params.sellToken.address !== "NATIVE" && params.buyToken.address === "NATIVE") {
-      // Token -> Native (e.g., 0.1 USDC -> BNB)
+    } else if (!isNativeIn && isNativeOut) {
       routerCalldata = encodeFunctionData({
         abi: V2_ROUTER_ABI,
         functionName: "swapExactTokensForETH",
-        args: [
-          sellUnits,
-          minOutUnits,
-          [params.sellToken.address, wethAddress],
-          taker,
-          deadline,
-        ],
+        args: [sellUnits, minOutUnits, path, taker, deadline],
       });
-    } else if (params.sellToken.address !== "NATIVE" && params.buyToken.address !== "NATIVE") {
-      // Token -> Token (e.g., USDC -> USDT via Wrapped Native hop)
+    } else if (!isNativeIn && !isNativeOut) {
       routerCalldata = encodeFunctionData({
         abi: V2_ROUTER_ABI,
         functionName: "swapExactTokensForTokens",
-        args: [
-          sellUnits,
-          minOutUnits,
-          [params.sellToken.address, wethAddress, params.buyToken.address],
-          taker,
-          deadline,
-        ],
+        args: [sellUnits, minOutUnits, path, taker, deadline],
       });
     }
   }
@@ -239,13 +271,13 @@ export async function fetchSwapQuote(params: {
     sellAmount: sellUnits.toString(),
     buyAmount: buyUnits.toString(),
     estimatedPriceImpact: "0.05",
-    price: oracleRate.toFixed(
-      oracleRate < 0.01 ? 6 : oracleRate < 10 ? 4 : 2
+    price: executionRate.toFixed(
+      executionRate < 0.01 ? 6 : executionRate < 10 ? 4 : 2
     ),
     guaranteedPrice: (
-      oracleRate *
+      executionRate *
       (1 - params.slippagePercent / 100)
-    ).toFixed(oracleRate < 0.01 ? 6 : oracleRate < 10 ? 4 : 2),
+    ).toFixed(executionRate < 0.01 ? 6 : executionRate < 10 ? 4 : 2),
     to: isTestnet ? taker : v2Router,
     data: routerCalldata,
     value: routerValue,
