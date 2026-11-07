@@ -157,23 +157,21 @@ export default function SwapView() {
       return;
     }
 
+    // 1. DROP THE SHEET DOWN IMMEDIATELY (<50ms) AND RUN IN THE BACKGROUND!
+    setShowPreview(false);
     setTxError(null);
     setIsSwapping(true);
-    cancelSwapRef.current = false;
     triggerHaptic("medium");
 
-    // 12-Second Non-Blocking Watchdog: Guarantees UI will NEVER hang or force a page refresh
-    const watchdogTimer = setTimeout(() => {
-      if (isSwapping) {
-        setIsSwapping(false);
-        setShowPreview(false);
-        pushToast({
-          type: "info",
-          title: "Broadcast Complete",
-          description: "Transaction submitted to mempool. Updating in background.",
-        });
-      }
-    }, 12_000);
+    const formattedOut = parseFloat(
+      formatUnits(buyAmountWei, buyToken.decimals)
+    ).toFixed(4);
+
+    pushToast({
+      type: "info",
+      title: `Broadcasting Swap...`,
+      description: `Swapping ${sellAmount} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} in background`,
+    });
 
     try {
       const client = getResilientPublicClient(
@@ -181,9 +179,8 @@ export default function SwapView() {
         customRpcs[activeChainId]
       );
 
-      // STEP 1: ON-CHAIN APPROVAL CHECK (If selling an ERC-20 on Mainnet)
+      // Step A: Auto-Approve in background if selling an ERC-20 token
       if (!isTestnet && sellToken.address !== "NATIVE") {
-        setSwappingLabel(`Verifying ${sellToken.symbol} Allowance...`);
         const currentAllowance = await checkTokenAllowance({
           chainId: activeChainId,
           tokenAddress: getAddress(sellToken.address),
@@ -192,16 +189,9 @@ export default function SwapView() {
         }).catch(() => 0n);
 
         if (currentAllowance < sellAmountWei) {
-          setSwappingLabel(`Approving ${sellToken.symbol} on Blockchain...`);
-          pushToast({
-            type: "info",
-            title: `Approving ${sellToken.symbol}`,
-            description: "Signing on-chain DEX router allowance...",
-          });
-
           const approveData = encodeErc20Approve(
             quote.allowanceTarget,
-            sellAmountWei * 100n // approve with headroom to prevent subsequent approval transactions
+            sellAmountWei * 100n
           );
 
           const approveTx = await signAndBroadcastTransaction({
@@ -211,47 +201,23 @@ export default function SwapView() {
             value: 0n,
             data: approveData,
             gasLimit: 65_000n,
-            maxFeePerGas: parseGwei("1.1"),
-            maxPriorityFeePerGas: parseGwei("1.1"),
+            maxFeePerGas: parseGwei("1.05"),
+            maxPriorityFeePerGas: parseGwei("1.05"),
             type: "approve",
-            summary: `Approve ${sellToken.symbol} for DEX Swap`,
+            summary: `Approve ${sellToken.symbol}`,
             customRpc: customRpcs[activeChainId],
           });
 
           addTransaction(approveTx);
-
-          // Wait max 8 seconds for approval receipt
           await Promise.race([
             client.waitForTransactionReceipt({ hash: approveTx.hash }),
-            new Promise((res) => setTimeout(res, 8000)),
+            new Promise((res) => setTimeout(res, 6000)),
           ]);
+          updateTransactionStatus(approveTx.hash, "confirmed");
         }
       }
 
-      // STEP 2: PRE-FLIGHT SIMULATION GUARD (Prevents Gas Deduction if Call Will Revert!)
-      setSwappingLabel("Simulating Contract Call...");
-      const sim = await simulateAndEstimateTransaction({
-        chainId: activeChainId,
-        from: activeAddress,
-        to: quote.to,
-        value: BigInt(quote.value),
-        data: quote.data,
-        customRpc: customRpcs[activeChainId],
-      });
-
-      if (!isTestnet && !sim.simulationSuccess) {
-        throw new Error(
-          sim.revertReason ||
-            "PancakeSwap simulation reverted. Increase slippage to 1.5% and retry."
-        );
-      }
-
-      // STEP 3: BROADCAST REAL ON-CHAIN SWAP
-      setSwappingLabel("Broadcasting to Blockchain...");
-      const formattedOut = parseFloat(
-        formatUnits(buyAmountWei, buyToken.decimals)
-      ).toFixed(6);
-
+      // Step B: Broadcast Swap Transaction in 1 fast round-trip
       const detailedSwapSummary = `Swap ${sellAmount} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} (@ 1 ${sellToken.symbol} = ${quote.price} ${buyToken.symbol})`;
 
       const tx = await signAndBroadcastTransaction({
@@ -260,56 +226,55 @@ export default function SwapView() {
         to: quote.to,
         value: BigInt(quote.value),
         data: quote.data,
-        gasLimit: sim.fees.estimatedGasLimit > 0n ? sim.fees.estimatedGasLimit : 165_000n,
-        maxFeePerGas: sim.fees.normal.maxFeePerGas || parseGwei("1.1"),
-        maxPriorityFeePerGas: sim.fees.normal.maxPriorityFeePerGas || parseGwei("1.1"),
+        gasLimit: BigInt(quote.gas || "165000"),
+        maxFeePerGas: parseGwei("1.05"),
+        maxPriorityFeePerGas: parseGwei("1.05"),
         type: "swap",
         summary: detailedSwapSummary,
         customRpc: customRpcs[activeChainId],
       });
 
       addTransaction(tx);
-      clearTimeout(watchdogTimer);
       setIsSwapping(false);
-      setShowPreview(false);
 
-      pushToast({
-        type: "info",
-        title: "Swap Broadcasted!",
-        description: `Tx Hash: ${tx.hash.slice(0, 10)}... (Confirming on-chain)`,
-      });
-
-      // Background receipt listener (does not block user or lock UI)
+      // Step C: Background Receipt Confirmation
       client
         .waitForTransactionReceipt({ hash: tx.hash, timeout: 35_000 })
         .then(async (receipt) => {
           if (receipt.status === "success") {
-            updateTransactionStatus(tx.hash, "confirmed");
-            await syncChainBalances(activeChainId, true);
+            if (isTestnet) {
+              commitConfirmedSwap({
+                txHash: tx.hash,
+                chainId: activeChainId,
+                sellToken,
+                buyToken,
+                sellAmountWei,
+                buyAmountWei,
+              });
+            } else {
+              updateTransactionStatus(tx.hash, "confirmed");
+              await syncChainBalances(activeChainId, true);
+            }
             setTxSuccessHash(tx.hash);
             triggerHaptic("success");
             pushToast({
               type: "success",
-              title: "Swap Confirmed On-Chain!",
-              description: `Received +${formattedOut} ${buyToken.symbol}`,
+              title: "Swap Confirmed!",
+              description: `+${formattedOut} ${buyToken.symbol} is now in your wallet.`,
             });
           } else {
             updateTransactionStatus(tx.hash, "failed");
-            setTxError("Swap reverted on-chain. Check BscScan for details.");
+            setTxError("Swap reverted on-chain.");
           }
         })
-        .catch(() => {
-          // Keep transaction in background state without freezing UI
-        });
+        .catch(() => {});
     } catch (err: unknown) {
-      clearTimeout(watchdogTimer);
       setIsSwapping(false);
-      setShowPreview(false);
       const friendly = formatRpcError(err);
       setTxError(friendly);
       pushToast({
         type: "error",
-        title: "Swap Did Not Execute",
+        title: "Swap Failed",
         description: friendly,
       });
     }

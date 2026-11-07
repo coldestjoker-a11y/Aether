@@ -23,6 +23,7 @@ import { formatGwei, formatUnits } from "viem";
 import { useWalletStore } from "@/store/useWalletStore";
 import {
   CHAIN_METADATA,
+  SUPPORTED_CHAINS,
   getResilientPublicClient,
 } from "@/lib/chains/config";
 import { signAndBroadcastTransaction, formatRpcError } from "@/lib/tx/engine";
@@ -41,9 +42,52 @@ interface ParsedTxMetadata {
   formattedDate: string;
   formattedTime: string;
   networkFeeEth: string;
+  recipientAddress: string;
+  senderAddress: string;
   swapPaidDetail?: string;
   swapReceivedDetail?: string;
   swapRateDetail?: string;
+}
+
+export function extractActualRecipient(tx: WalletTransaction): string {
+  // If ERC-20 transfer calldata (0xa9059cbb...)
+  if (tx.data && tx.data.toLowerCase().startsWith("0xa9059cbb") && tx.data.length >= 74) {
+    return `0x${tx.data.slice(34, 74)}`;
+  }
+  // If summary has "to 0x..."
+  const toMatch = tx.summary.match(/to\s+(0x[a-fA-F0-9]{40})/i);
+  if (toMatch) {
+    return toMatch[1];
+  }
+  return tx.to;
+}
+
+export function extractActualSender(tx: WalletTransaction): string {
+  const fromMatch = tx.summary.match(/from\s+(0x[a-fA-F0-9]{40})/i);
+  if (fromMatch) {
+    return fromMatch[1];
+  }
+  return tx.from;
+}
+
+function getNativeCurrencySymbol(chainId: number): string {
+  if (chainId === 56 || CHAIN_METADATA[chainId as keyof typeof CHAIN_METADATA]?.shortName === "BSC") {
+    return "BNB";
+  }
+  return SUPPORTED_CHAINS[chainId as keyof typeof SUPPORTED_CHAINS]?.nativeCurrency?.symbol || "ETH";
+}
+
+function computeGasFeeString(tx: WalletTransaction): string {
+  try {
+    const sym = getNativeCurrencySymbol(tx.chainId);
+    const limit = BigInt(tx.gasLimit || "21000");
+    const price = BigInt(tx.maxFeePerGas || "0");
+    if (price === 0n) return `0.000021 ${sym}`;
+    const feeWei = limit * price;
+    return `${parseFloat(formatUnits(feeWei, 18)).toFixed(6)} ${sym}`;
+  } catch {
+    return "0.000021 ETH";
+  }
 }
 
 /**
@@ -69,6 +113,10 @@ function parseTransactionMetadata(
 
   // Deterministic, human-friendly Transaction ID
   const txId = `AV-${tx.chainId}-${tx.nonce}-${tx.hash.slice(2, 8).toUpperCase()}`;
+
+  const recipientAddress = extractActualRecipient(tx);
+  const senderAddress = extractActualSender(tx);
+  const nativeSym = getNativeCurrencySymbol(tx.chainId);
 
   const isIncoming =
     tx.summary.toUpperCase().includes("[INCOMING]") ||
@@ -104,6 +152,8 @@ function parseTransactionMetadata(
         formattedDate,
         formattedTime,
         networkFeeEth: computeGasFeeString(tx),
+        recipientAddress,
+        senderAddress,
         swapPaidDetail: paid,
         swapReceivedDetail: rec,
         swapRateDetail: rate,
@@ -129,6 +179,8 @@ function parseTransactionMetadata(
       formattedDate,
       formattedTime,
       networkFeeEth: computeGasFeeString(tx),
+      recipientAddress,
+      senderAddress,
     };
   }
 
@@ -145,6 +197,8 @@ function parseTransactionMetadata(
       formattedDate,
       formattedTime,
       networkFeeEth: computeGasFeeString(tx),
+      recipientAddress,
+      senderAddress,
     };
   }
 
@@ -168,10 +222,12 @@ function parseTransactionMetadata(
       formattedDate,
       formattedTime,
       networkFeeEth: computeGasFeeString(tx),
+      recipientAddress,
+      senderAddress,
     };
   }
 
-  // 3. Fallback to raw `tx.value` in Native ETH
+  // 3. Fallback to raw `tx.value` in Native Currency (ETH, BNB, POL, etc.)
   let fallbackAmt = "0.0000";
   try {
     fallbackAmt = parseFloat(formatUnits(BigInt(tx.value || "0"), 18)).toFixed(
@@ -188,26 +244,16 @@ function parseTransactionMetadata(
       direction === "SWAP"
         ? tx.summary.replace(/^Swap\s+/i, "")
         : `${direction === "IN" ? "+" : "-"}${fallbackAmt}`,
-    symbol: direction === "SWAP" ? "" : "ETH",
+    symbol: direction === "SWAP" ? "" : nativeSym,
     formattedDate,
     formattedTime,
     networkFeeEth: computeGasFeeString(tx),
+    recipientAddress,
+    senderAddress,
     swapPaidDetail: direction === "SWAP" ? tx.summary : undefined,
     swapReceivedDetail: direction === "SWAP" ? "Executed" : undefined,
     swapRateDetail: direction === "SWAP" ? "Market Rate" : undefined,
   };
-}
-
-function computeGasFeeString(tx: WalletTransaction): string {
-  try {
-    const limit = BigInt(tx.gasLimit || "21000");
-    const price = BigInt(tx.maxFeePerGas || "0");
-    if (price === 0n) return "0.000021 ETH";
-    const feeWei = limit * price;
-    return `${parseFloat(formatUnits(feeWei, 18)).toFixed(6)} ETH`;
-  } catch {
-    return "0.000021 ETH";
-  }
 }
 
 /**
@@ -562,33 +608,9 @@ export default function ActivityView() {
               </div>
             </div>
 
-            {/* Structured Receipt Details Grid */}
+            {/* Compact, Smart 4-Row Receipt Details Grid */}
             <div className="p-4 rounded-2xl bg-slate-950/90 border border-white/10 space-y-3 text-xs">
-              {/* Complete Swap Paid / Received / Rate Breakdown */}
-              {selectedMeta.direction === "SWAP" && (
-                <>
-                  <div className="flex items-center justify-between border-b border-white/5 pb-2.5">
-                    <span className="text-slate-400">Amount Paid (Sold)</span>
-                    <span className="font-mono text-rose-400 font-bold">
-                      {selectedMeta.swapPaidDetail}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between border-b border-white/5 pb-2.5">
-                    <span className="text-slate-400">Amount Received (Bought)</span>
-                    <span className="font-mono text-emerald-400 font-bold">
-                      {selectedMeta.swapReceivedDetail}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between border-b border-white/5 pb-2.5">
-                    <span className="text-slate-400">Execution Rate</span>
-                    <span className="font-mono text-indigo-300">
-                      {selectedMeta.swapRateDetail}
-                    </span>
-                  </div>
-                </>
-              )}
-
-              {/* Date & Exact Time */}
+              {/* Row 1: Date & Time */}
               <div className="flex items-center justify-between">
                 <span className="text-slate-400 flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5 text-indigo-400" />
@@ -599,103 +621,117 @@ export default function ActivityView() {
                 </span>
               </div>
 
-              {/* Unique Transaction ID */}
+              {/* Row 2: Counterparty / Swap Route */}
+              {selectedMeta.direction === "SWAP" ? (
+                <div className="border-t border-white/5 pt-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400 flex items-center gap-1.5">
+                      <Repeat className="w-3.5 h-3.5 text-violet-400" />
+                      Swap Route
+                    </span>
+                    <div className="text-right font-mono font-bold text-xs">
+                      <span className="text-rose-400">{selectedMeta.swapPaidDetail}</span>
+                      <span className="text-slate-500 mx-1.5">→</span>
+                      <span className="text-emerald-400">{selectedMeta.swapReceivedDetail}</span>
+                    </div>
+                  </div>
+                  {selectedMeta.swapRateDetail && (
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-500">Rate</span>
+                      <span className="font-mono text-indigo-300">{selectedMeta.swapRateDetail}</span>
+                    </div>
+                  )}
+                </div>
+              ) : selectedMeta.direction === "IN" ? (
+                <div className="flex items-center justify-between border-t border-white/5 pt-2.5">
+                  <span className="text-slate-400 flex items-center gap-1.5">
+                    <ArrowDownLeft className="w-3.5 h-3.5 text-emerald-400" />
+                    Sender (From)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(selectedMeta.senderAddress, "sender")}
+                    className="font-mono text-slate-200 hover:text-white flex items-center gap-1.5 font-semibold"
+                  >
+                    <span>{formatFriendlyAddress(selectedMeta.senderAddress, 6)}</span>
+                    {copiedField === "sender" ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5 text-slate-400" />
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between border-t border-white/5 pt-2.5">
+                  <span className="text-slate-400 flex items-center gap-1.5">
+                    <ArrowUpRight className="w-3.5 h-3.5 text-indigo-400" />
+                    Recipient (To)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(selectedMeta.recipientAddress, "recipient")}
+                    className="font-mono text-slate-200 hover:text-white flex items-center gap-1.5 font-semibold"
+                  >
+                    <span>{formatFriendlyAddress(selectedMeta.recipientAddress, 6)}</span>
+                    {copiedField === "recipient" ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5 text-slate-400" />
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* Row 3: Transaction ID & Reference Hash */}
               <div className="flex items-center justify-between border-t border-white/5 pt-2.5">
-                <span className="text-slate-400 flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 text-slate-400">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                  Transaction ID
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(selectedMeta.txId, "txId")}
-                  className="font-mono text-indigo-300 hover:text-white flex items-center gap-1.5 font-bold"
-                >
-                  <span>{selectedMeta.txId}</span>
-                  {copiedField === "txId" ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </button>
+                  <span>ID & Hash</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(selectedMeta.txId, "txId")}
+                    className="font-mono text-indigo-300 hover:text-white flex items-center gap-1 font-bold text-[11px]"
+                    title={selectedMeta.txId}
+                  >
+                    <span>{selectedMeta.txId}</span>
+                    {copiedField === "txId" ? (
+                      <Check className="w-3 h-3 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3 h-3 text-slate-400" />
+                    )}
+                  </button>
+                  <span className="text-slate-600">•</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(selectedTx.hash, "hash")}
+                    className="font-mono text-slate-300 hover:text-white flex items-center gap-1 text-[11px]"
+                    title={selectedTx.hash}
+                  >
+                    <span>{formatFriendlyAddress(selectedTx.hash, 4)}</span>
+                    {copiedField === "hash" ? (
+                      <Check className="w-3 h-3 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3 h-3 text-slate-400" />
+                    )}
+                  </button>
+                </div>
               </div>
 
-              {/* Full Transaction Hash */}
-              <div className="flex items-center justify-between border-t border-white/5 pt-2.5">
-                <span className="text-slate-400 flex items-center gap-1.5">
-                  <Hash className="w-3.5 h-3.5 text-indigo-400" />
-                  Transaction Hash
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(selectedTx.hash, "hash")}
-                  className="font-mono text-slate-200 hover:text-white flex items-center gap-1.5"
-                >
-                  <span>{formatFriendlyAddress(selectedTx.hash, 6)}</span>
-                  {copiedField === "hash" ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </button>
-              </div>
-
-              {/* Sender Address (From) */}
-              <div className="flex items-center justify-between border-t border-white/5 pt-2.5">
-                <span className="text-slate-400">From</span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(selectedTx.from, "from")}
-                  className="font-mono text-slate-200 hover:text-white flex items-center gap-1.5"
-                >
-                  <span>{formatFriendlyAddress(selectedTx.from, 6)}</span>
-                  {copiedField === "from" ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </button>
-              </div>
-
-              {/* Recipient Address (To) */}
-              <div className="flex items-center justify-between border-t border-white/5 pt-2.5">
-                <span className="text-slate-400">To</span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(selectedTx.to, "to")}
-                  className="font-mono text-slate-200 hover:text-white flex items-center gap-1.5"
-                >
-                  <span>{formatFriendlyAddress(selectedTx.to, 6)}</span>
-                  {copiedField === "to" ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </button>
-              </div>
-
-              {/* Network, Nonce & Gas Fee */}
+              {/* Row 4: Network Fee & Nonce */}
               <div className="flex items-center justify-between border-t border-white/5 pt-2.5">
                 <span className="text-slate-400 flex items-center gap-1.5">
                   <Layers className="w-3.5 h-3.5 text-violet-400" />
                   Network Fee & Nonce
                 </span>
-                <span className="font-mono text-slate-300">
-                  {selectedMeta.networkFeeEth} (Nonce #{selectedTx.nonce})
+                <span className="font-mono text-slate-200 font-semibold">
+                  {selectedMeta.networkFeeEth}{" "}
+                  <span className="text-slate-500 font-normal">
+                    (Nonce #{selectedTx.nonce})
+                  </span>
                 </span>
               </div>
-
-              {selectedTx.maxFeePerGas &&
-                BigInt(selectedTx.maxFeePerGas) > 0n && (
-                  <div className="flex items-center justify-between border-t border-white/5 pt-2.5">
-                    <span className="text-slate-400">Gas Price</span>
-                    <span className="font-mono text-slate-400">
-                      {parseFloat(
-                        formatGwei(BigInt(selectedTx.maxFeePerGas))
-                      ).toFixed(2)}{" "}
-                      Gwei
-                    </span>
-                  </div>
-                )}
             </div>
 
             {/* Speed-Up / Cancel Controls if Pending */}

@@ -555,8 +555,12 @@ export default function DashboardView({ onNavigateTab }: Props) {
                 key={id}
                 onClick={() => {
                   triggerHaptic("medium");
-                  setActiveChainId(id);
+                  // 1. Close popup immediately so the animation never lags
                   setIsNetworkSheetOpen(false);
+                  // 2. Defer heavy chain state switch to a non-blocking React transition
+                  React.startTransition(() => {
+                    setActiveChainId(id);
+                  });
                 }}
                 className={`w-full p-3.5 rounded-2xl border flex items-center justify-between transition ${
                   isSelected

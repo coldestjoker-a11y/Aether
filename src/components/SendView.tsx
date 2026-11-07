@@ -390,57 +390,64 @@ export default function SendView({
       addTransaction(tx);
       setTxResult({ hash: tx.hash, explorerUrl: tx.explorerUrl });
 
+      // Non-blocking: unblock button immediately upon fast mempool broadcast
+      setIsSending(false);
+
       pushToast({
         type: "info",
         title: "Broadcasted to Blockchain!",
         description: `Waiting for block confirmation (${tx.hash.slice(0, 10)}...)`,
       });
 
-      // 2. Wait for the REAL on-chain receipt from BscScan / Etherscan RPC nodes
+      // 2. Wait for the REAL on-chain receipt in the background without locking UI
       const client = getResilientPublicClient(
         activeChainId,
         customRpcs[activeChainId]
       );
 
-      const receipt = await client.waitForTransactionReceipt({
-        hash: tx.hash,
-        timeout: 45_000,
-      });
+      client
+        .waitForTransactionReceipt({
+          hash: tx.hash,
+          timeout: 45_000,
+        })
+        .then(async (receipt) => {
+          if (receipt.status === "success") {
+            commitConfirmedSend({
+              txHash: tx.hash,
+              chainId: activeChainId,
+              token: selectedToken,
+              amountWei: payload.parsedUnits,
+              usedSyntheticSettlement: payload.usedSyntheticSettlement,
+            });
 
-      if (receipt.status === "success") {
-        commitConfirmedSend({
-          txHash: tx.hash,
-          chainId: activeChainId,
-          token: selectedToken,
-          amountWei: payload.parsedUnits,
-          usedSyntheticSettlement: payload.usedSyntheticSettlement,
-        });
+            broadcastIncomingTransferPacket({
+              txHash: tx.hash,
+              chainId: activeChainId,
+              from: senderPairAddress,
+              to: resolvedAddress,
+              symbol: selectedToken.symbol,
+              tokenAddress: selectedToken.address,
+              amountWei: payload.parsedUnits.toString(),
+              timestamp: Date.now(),
+            });
 
-        broadcastIncomingTransferPacket({
-          txHash: tx.hash,
-          chainId: activeChainId,
-          from: senderPairAddress,
-          to: resolvedAddress,
-          symbol: selectedToken.symbol,
-          tokenAddress: selectedToken.address,
-          amountWei: payload.parsedUnits.toString(),
-          timestamp: Date.now(),
-        });
-
-        await syncChainBalances(activeChainId, true);
-        triggerHaptic("success");
-        pushToast({
-          type: "success",
-          title: `${selectedToken.symbol} Confirmed On-Chain!`,
-          description: `Block #${receipt.blockNumber.toString()} • Delivered to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`,
-        });
-      } else {
-        updateTransactionStatus(tx.hash, "failed");
-        setSimulationError(
-          "Transaction reverted on-chain. Check BscScan/Etherscan link below."
-        );
-      }
+            await syncChainBalances(activeChainId, true);
+            triggerHaptic("success");
+            pushToast({
+              type: "success",
+              title: `${selectedToken.symbol} Confirmed On-Chain!`,
+              description: `Block #${receipt.blockNumber.toString()} • Delivered to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`,
+            });
+          } else {
+            updateTransactionStatus(tx.hash, "failed");
+            setSimulationError(
+              "Transaction reverted on-chain. Check BscScan/Etherscan link below."
+            );
+          }
+        })
+        .catch(() => {});
     } catch (err: unknown) {
+      setIsSending(false);
       const friendly = formatRpcError(err);
       setSimulationError(friendly);
       pushToast({
@@ -448,8 +455,6 @@ export default function SendView({
         title: "Transfer Failed",
         description: friendly,
       });
-    } finally {
-      setIsSending(false);
     }
   };
 
