@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
-import { motion } from "framer-motion";
+import React, { useState, useEffect, useMemo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowDownUp,
   CheckCircle2,
@@ -12,6 +12,7 @@ import {
   Sparkles,
   Wallet,
   AlertCircle,
+  Loader2,
 } from "lucide-react";
 import { formatUnits, parseGwei, getAddress } from "viem";
 import { useWalletStore } from "@/store/useWalletStore";
@@ -20,7 +21,6 @@ import { fetchSwapQuote, ExtendedSwapQuote } from "@/lib/swap/aggregator";
 import {
   checkTokenAllowance,
   encodeErc20Approve,
-  simulateAndEstimateTransaction,
   signAndBroadcastTransaction,
   formatRpcError,
 } from "@/lib/tx/engine";
@@ -28,9 +28,7 @@ import { fetchUniversalTokenList } from "@/lib/tokens/registry";
 import { TokenAsset } from "@/types/wallet";
 import BottomSheet from "@/components/ui/BottomSheet";
 import { TokenLogo, TokenPairLogo } from "@/components/ui/TokenLogo";
-import AetherWaveLoader from "@/components/ui/AetherWaveLoader";
 import { triggerHaptic } from "@/lib/ui/haptics";
-import { useToast } from "@/components/ui/ToastProvider";
 
 export default function SwapView() {
   const {
@@ -41,19 +39,18 @@ export default function SwapView() {
     customRpcs,
     sessionPrivateKey,
     addTransaction,
-    updateTransactionStatus,
     syncChainBalances,
     commitConfirmedSwap,
     getEffectiveTokenBalance,
+    getRawOnChainTokenBalance,
     balanceSyncVersion,
   } = useWalletStore();
-  const { pushToast } = useToast();
 
   useEffect(() => {
     fetchUniversalTokenList(activeChainId).then((tokens) => {
       tokens.forEach((t) => addCustomToken(t));
     });
-    syncChainBalances(activeChainId);
+    syncChainBalances(activeChainId, true);
   }, [activeChainId]);
 
   const chainTokens = useMemo(
@@ -63,27 +60,45 @@ export default function SwapView() {
 
   const [sellIdx, setSellIdx] = useState<number>(0);
   const [buyIdx, setBuyIdx] = useState<number>(1);
-  const [sellAmount, setSellAmount] = useState<string>("0.1");
-  const [slippage, setSlippage] = useState<number>(1.0); // 1.0% safe default for micro-swaps
+  const [sellAmount, setSellAmount] = useState<string>("0.001");
+  const [slippage, setSlippage] = useState<number>(1.0);
   const [quote, setQuote] = useState<ExtendedSwapQuote | null>(null);
   const [isLoadingQuote, setIsLoadingQuote] = useState<boolean>(false);
   const [isSwapping, setIsSwapping] = useState<boolean>(false);
-  const [swappingLabel, setSwappingLabel] = useState<string>("Broadcasting...");
   const [showPreview, setShowPreview] = useState<boolean>(false);
-  const [tokenPickerSide, setTokenPickerSide] = useState<"sell" | "buy" | null>(null);
+  const [tokenPickerSide, setTokenPickerSide] = useState<"sell" | "buy" | null>(
+    null
+  );
   const [tokenSearch, setTokenSearch] = useState<string>("");
   const [txError, setTxError] = useState<string | null>(null);
-  const [txSuccessHash, setTxSuccessHash] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number>(10);
 
-  const cancelSwapRef = useRef<boolean>(false);
+  // Top Floating Popup State ("Swapping..." -> "Completed!")
+  const [topBanner, setTopBanner] = useState<{
+    status: "swapping" | "completed";
+    message: string;
+  } | null>(null);
 
   const sellToken: TokenAsset = chainTokens[sellIdx] || chainTokens[0];
   const buyToken: TokenAsset =
     chainTokens[buyIdx] || chainTokens[1] || chainTokens[0];
 
+  const nativeTokenAsset = useMemo(
+    () => chainTokens.find((t) => t.address === "NATIVE") || chainTokens[0],
+    [chainTokens]
+  );
+
+  const nativeBalanceWei = useMemo(
+    () =>
+      nativeTokenAsset
+        ? getRawOnChainTokenBalance(activeChainId, nativeTokenAsset)
+        : 0n,
+    [activeChainId, nativeTokenAsset, balanceSyncVersion]
+  );
+
   const sellTokenBalanceWei = useMemo(
-    () => (sellToken ? getEffectiveTokenBalance(activeChainId, sellToken) : 0n),
+    () =>
+      sellToken ? getEffectiveTokenBalance(activeChainId, sellToken) : 0n,
     [activeChainId, sellToken, balanceSyncVersion]
   );
 
@@ -105,6 +120,7 @@ export default function SwapView() {
         sellAmountHuman: sellAmount,
         slippagePercent: slippage,
         takerAddress: activeAddress || undefined,
+        nativeBalanceWei,
       });
       setQuote(q);
       setCountdown(10);
@@ -118,7 +134,7 @@ export default function SwapView() {
   useEffect(() => {
     const debounce = setTimeout(() => {
       loadQuote();
-    }, 250);
+    }, 220);
 
     const timer = setInterval(() => {
       setCountdown((c) => {
@@ -134,7 +150,7 @@ export default function SwapView() {
       clearTimeout(debounce);
       clearInterval(timer);
     };
-  }, [sellIdx, buyIdx, sellAmount, slippage, activeChainId]);
+  }, [sellIdx, buyIdx, sellAmount, slippage, activeChainId, nativeBalanceWei]);
 
   const handleExecuteSwap = async () => {
     if (!sessionPrivateKey || !quote || !activeAddress) {
@@ -152,25 +168,27 @@ export default function SwapView() {
       setTxError(
         `Insufficient ${sellToken.symbol} balance. Available: ${parseFloat(
           formatUnits(sellTokenBalanceWei, sellToken.decimals)
-        ).toFixed(4)} ${sellToken.symbol}.`
+        ).toFixed(5)} ${sellToken.symbol}.`
       );
       return;
     }
 
-    // 1. DROP THE SHEET DOWN IMMEDIATELY (<50ms) AND RUN IN THE BACKGROUND!
+    const formattedIn = parseFloat(
+      formatUnits(sellAmountWei, sellToken.decimals)
+    ).toFixed(4);
+    const formattedOut = parseFloat(
+      formatUnits(buyAmountWei, buyToken.decimals)
+    ).toFixed(4);
+
+    // 1. Close preview sheet immediately & show TOP FLOATING POPUP: "Swapping..."
     setShowPreview(false);
     setTxError(null);
     setIsSwapping(true);
     triggerHaptic("medium");
 
-    const formattedOut = parseFloat(
-      formatUnits(buyAmountWei, buyToken.decimals)
-    ).toFixed(4);
-
-    pushToast({
-      type: "info",
-      title: `Broadcasting Swap...`,
-      description: `Swapping ${sellAmount} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} in background`,
+    setTopBanner({
+      status: "swapping",
+      message: `Swapping ${formattedIn} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol}...`,
     });
 
     try {
@@ -179,7 +197,7 @@ export default function SwapView() {
         customRpcs[activeChainId]
       );
 
-      // Step A: Auto-Approve in background if selling an ERC-20 token
+      // Step A: If selling an ERC-20 token on Mainnet, verify/approve allowance first
       if (!isTestnet && sellToken.address !== "NATIVE") {
         const currentAllowance = await checkTokenAllowance({
           chainId: activeChainId,
@@ -200,25 +218,23 @@ export default function SwapView() {
             to: sellToken.address,
             value: 0n,
             data: approveData,
-            gasLimit: 65_000n,
-            maxFeePerGas: parseGwei("1.05"),
-            maxPriorityFeePerGas: parseGwei("1.05"),
+            gasLimit: 60_000n,
+            maxFeePerGas: parseGwei("1"),
+            maxPriorityFeePerGas: parseGwei("1"),
             type: "approve",
             summary: `Approve ${sellToken.symbol}`,
             customRpc: customRpcs[activeChainId],
           });
 
-          addTransaction(approveTx);
           await Promise.race([
             client.waitForTransactionReceipt({ hash: approveTx.hash }),
             new Promise((res) => setTimeout(res, 6000)),
           ]);
-          updateTransactionStatus(approveTx.hash, "confirmed");
         }
       }
 
-      // Step B: Broadcast Swap Transaction in 1 fast round-trip
-      const detailedSwapSummary = `Swap ${sellAmount} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} (@ 1 ${sellToken.symbol} = ${quote.price} ${buyToken.symbol})`;
+      // Step B: Broadcast On-Chain Swap Transaction (with automatic native gas reserve)
+      const detailedSwapSummary = `Swap ${formattedIn} ${sellToken.symbol} → ${formattedOut} ${buyToken.symbol} (@ 1 ${sellToken.symbol} = ${quote.price} ${buyToken.symbol})`;
 
       const tx = await signAndBroadcastTransaction({
         chainId: activeChainId,
@@ -226,57 +242,55 @@ export default function SwapView() {
         to: quote.to,
         value: BigInt(quote.value),
         data: quote.data,
-        gasLimit: BigInt(quote.gas || "165000"),
-        maxFeePerGas: parseGwei("1.05"),
-        maxPriorityFeePerGas: parseGwei("1.05"),
+        gasLimit: 135_000n,
+        maxFeePerGas: parseGwei("1"),
+        maxPriorityFeePerGas: parseGwei("1"),
         type: "swap",
         summary: detailedSwapSummary,
         customRpc: customRpcs[activeChainId],
       });
 
-      addTransaction(tx);
-      setIsSwapping(false);
-
-      // Step C: Background Receipt Confirmation
-      client
-        .waitForTransactionReceipt({ hash: tx.hash, timeout: 35_000 })
-        .then(async (receipt) => {
-          if (receipt.status === "success") {
-            if (isTestnet) {
-              commitConfirmedSwap({
-                txHash: tx.hash,
-                chainId: activeChainId,
-                sellToken,
-                buyToken,
-                sellAmountWei,
-                buyAmountWei,
-              });
-            } else {
-              updateTransactionStatus(tx.hash, "confirmed");
-              await syncChainBalances(activeChainId, true);
-            }
-            setTxSuccessHash(tx.hash);
-            triggerHaptic("success");
-            pushToast({
-              type: "success",
-              title: "Swap Confirmed!",
-              description: `+${formattedOut} ${buyToken.symbol} is now in your wallet.`,
-            });
-          } else {
-            updateTransactionStatus(tx.hash, "failed");
-            setTxError("Swap reverted on-chain.");
-          }
-        })
-        .catch(() => {});
-    } catch (err: unknown) {
-      setIsSwapping(false);
-      const friendly = formatRpcError(err);
-      setTxError(friendly);
-      pushToast({
-        type: "error",
-        title: "Swap Failed",
-        description: friendly,
+      // Step C: Wait for on-chain block confirmation, then flip top popup to "Completed!" AND add to Activity history!
+      const receipt = await client.waitForTransactionReceipt({
+        hash: tx.hash,
+        timeout: 40_000,
       });
+
+      if (receipt.status === "success") {
+        const confirmedTx = { ...tx, status: "confirmed" as const };
+        addTransaction(confirmedTx);
+
+        if (isTestnet) {
+          commitConfirmedSwap({
+            txHash: tx.hash,
+            chainId: activeChainId,
+            sellToken,
+            buyToken,
+            sellAmountWei,
+            buyAmountWei,
+          });
+        } else {
+          await syncChainBalances(activeChainId, true);
+        }
+
+        triggerHaptic("success");
+        setTopBanner({
+          status: "completed",
+          message: `Completed! Swapped ${formattedIn} ${sellToken.symbol} → +${formattedOut} ${buyToken.symbol}`,
+        });
+
+        setTimeout(() => {
+          setTopBanner(null);
+        }, 4000);
+      } else {
+        setTopBanner(null);
+        setTxError("Swap transaction reverted on-chain.");
+      }
+    } catch (err: unknown) {
+      setTopBanner(null);
+      setTxError(formatRpcError(err));
+    } finally {
+      setIsSwapping(false);
     }
   };
 
@@ -293,7 +307,35 @@ export default function SwapView() {
   );
 
   return (
-    <div className="space-y-4 pb-28">
+    <div className="space-y-4 pb-28 relative">
+      {/* TOP FLOATING POPUP PILL: "Swapping..." -> "Completed!" */}
+      <AnimatePresence>
+        {topBanner && (
+          <motion.div
+            initial={{ opacity: 0, y: -30, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -25, scale: 0.95 }}
+            transition={{ duration: 0.2 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-sm pointer-events-none"
+          >
+            <div
+              className={`px-4 py-3 rounded-2xl border shadow-2xl flex items-center gap-3 text-xs font-bold ${
+                topBanner.status === "completed"
+                  ? "bg-emerald-950/95 border-emerald-500/50 text-emerald-200"
+                  : "bg-indigo-950/95 border-indigo-500/50 text-indigo-100"
+              }`}
+            >
+              {topBanner.status === "swapping" ? (
+                <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              )}
+              <span className="truncate">{topBanner.message}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Clean Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -306,7 +348,9 @@ export default function SwapView() {
         <div className="px-3 py-1.5 rounded-full bg-slate-900 border border-white/10 flex items-center gap-2 text-xs text-slate-300">
           <RefreshCw
             className={`w-3.5 h-3.5 ${
-              isLoadingQuote ? "animate-spin text-indigo-400" : "text-emerald-400"
+              isLoadingQuote
+                ? "animate-spin text-indigo-400"
+                : "text-emerald-400"
             }`}
           />
           <span className="tabular-nums">{countdown}s</span>
@@ -325,11 +369,14 @@ export default function SwapView() {
                 const fullBal = parseFloat(
                   formatUnits(sellTokenBalanceWei, sellToken?.decimals ?? 18)
                 );
+                // Reserve ~0.00018 BNB (~$0.11) when clicking MAX on Native BNB/ETH so swap gas is always covered
                 const safeMax =
                   sellToken?.address === "NATIVE"
-                    ? Math.max(0, fullBal - 0.0005)
+                    ? Math.max(0, fullBal - 0.00018)
                     : fullBal;
-                setSellAmount(safeMax > 0 ? String(safeMax) : "0.1");
+                setSellAmount(
+                  safeMax > 0 ? safeMax.toFixed(6).replace(/\.?0+$/, "") : "0"
+                );
               }}
               className="flex items-center gap-1 text-indigo-300 hover:text-indigo-200 font-mono"
             >
@@ -466,13 +513,6 @@ export default function SwapView() {
           </div>
         )}
 
-        {txSuccessHash && (
-          <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            <span>Swap Confirmed! ({txSuccessHash.slice(0, 10)}...)</span>
-          </div>
-        )}
-
         <motion.button
           whileTap={{ scale: 0.98 }}
           data-testid="btn-review-swap"
@@ -483,7 +523,7 @@ export default function SwapView() {
           }}
           className="w-full py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm disabled:opacity-40 shadow-lg shadow-indigo-600/25 transition"
         >
-          Review Swap
+          {isSwapping ? "Swapping in Progress..." : "Review Swap"}
         </motion.button>
       </div>
 
@@ -555,12 +595,10 @@ export default function SwapView() {
         </div>
       </BottomSheet>
 
-      {/* Confirmation Sheet with Guaranteed Cancel & No Freeze */}
+      {/* Confirmation Sheet */}
       <BottomSheet
         isOpen={showPreview}
-        onClose={() => {
-          if (!isSwapping) setShowPreview(false);
-        }}
+        onClose={() => setShowPreview(false)}
         title="Confirm Swap"
       >
         <div className="space-y-4">
@@ -568,7 +606,13 @@ export default function SwapView() {
             <div className="flex items-center justify-between">
               <span className="text-slate-400">You Pay</span>
               <span className="text-sm font-bold text-rose-400 font-mono">
-                -{sellAmount} {sellToken?.symbol}
+                -
+                {quote
+                  ? parseFloat(
+                      formatUnits(BigInt(quote.sellAmount), sellToken.decimals)
+                    ).toFixed(5)
+                  : sellAmount}{" "}
+                {sellToken?.symbol}
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -582,27 +626,19 @@ export default function SwapView() {
           <div className="flex gap-2.5">
             <button
               type="button"
-              disabled={isSwapping}
               onClick={() => setShowPreview(false)}
-              className="flex-1 py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-xs font-bold disabled:opacity-40"
+              className="flex-1 py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-xs font-bold"
             >
               Cancel
             </button>
             <button
               data-testid="btn-confirm-swap"
               type="button"
-              disabled={isSwapping}
               onClick={handleExecuteSwap}
-              className="flex-1 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-600/25 disabled:opacity-50"
+              className="flex-1 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-600/25"
             >
-              {isSwapping ? (
-                <AetherWaveLoader size="sm" label={swappingLabel} />
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4" />
-                  <span>Confirm Swap</span>
-                </>
-              )}
+              <Sparkles className="w-4 h-4" />
+              <span>Confirm Swap</span>
             </button>
           </div>
         </div>

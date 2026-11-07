@@ -4,6 +4,7 @@ import {
   getAddress,
   Hex,
   parseAbi,
+  parseGwei,
   parseUnits,
 } from "viem";
 import { CHAIN_METADATA, getResilientPublicClient } from "@/lib/chains/config";
@@ -19,7 +20,6 @@ const ERC20_DECIMALS_ABI = parseAbi([
   "function decimals() view returns (uint8)",
 ]);
 
-// Official Canonical V2 Routers
 export const V2_ROUTER_BY_CHAIN: Record<SupportedChainId, Address> = {
   56: "0x10ED43C718714eb63d5aA57B78B54704E256024E",      // PancakeSwap V2 Router on BSC
   1: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",       // Uniswap V2 Router on Ethereum
@@ -49,10 +49,10 @@ export async function fetchSwapQuote(params: {
   sellAmountHuman: string;
   slippagePercent: number;
   takerAddress?: Address;
+  nativeBalanceWei?: bigint;
 }): Promise<ExtendedSwapQuote> {
   const client = getResilientPublicClient(params.chainId);
 
-  // Auto-detect real on-chain decimals to prevent 6-decimal vs 18-decimal mismatches on BSC
   let realSellDecimals = params.sellToken.decimals;
   if (params.sellToken.address !== "NATIVE") {
     try {
@@ -67,7 +67,7 @@ export async function fetchSwapQuote(params: {
     }
   }
 
-  const sellUnits = parseUnits(
+  let sellUnits = parseUnits(
     params.sellAmountHuman || "0",
     realSellDecimals
   );
@@ -76,15 +76,38 @@ export async function fetchSwapQuote(params: {
     throw new Error("Enter an amount greater than 0");
   }
 
+  // AUTO GAS RESERVE FOR NATIVE SWAPS (e.g. $1.30 BNB -> USDT):
+  // If user is selling Native BNB/ETH and `sellUnits + 0.00018 BNB gas reserve > nativeBalanceWei`,
+  // automatically deduct the gas reserve BEFORE building the router quote so `msg.value` and `amountOutMin` match!
+  if (
+    params.sellToken.address === "NATIVE" &&
+    params.nativeBalanceWei &&
+    params.nativeBalanceWei > 0n
+  ) {
+    const gasReserveWei =
+      params.chainId === 56
+        ? 145_000n * parseGwei("1.05") // ~0.000152 BNB (~$0.10) gas reserve on BSC
+        : 145_000n * parseGwei("0.5");
+
+    if (
+      sellUnits + gasReserveWei > params.nativeBalanceWei &&
+      params.nativeBalanceWei > gasReserveWei
+    ) {
+      sellUnits = params.nativeBalanceWei - gasReserveWei;
+    }
+  }
+
   const isTestnet = CHAIN_METADATA[params.chainId].isTestnet;
   const wethAddress = getAddress(CHAIN_METADATA[params.chainId].wethAddress);
   const sellSym = params.sellToken.symbol.toUpperCase();
   const buySym = params.buyToken.symbol.toUpperCase();
 
-  // 1. Direct Native <-> Wrapped Native (e.g. BNB <-> WBNB, ETH <-> WETH)
+  // 1. Direct Native <-> Wrapped Native
   if (
-    (params.sellToken.address === "NATIVE" && (buySym === "WBNB" || buySym === "WETH")) ||
-    ((sellSym === "WBNB" || sellSym === "WETH") && params.buyToken.address === "NATIVE")
+    (params.sellToken.address === "NATIVE" &&
+      (buySym === "WBNB" || buySym === "WETH")) ||
+    ((sellSym === "WBNB" || sellSym === "WETH") &&
+      params.buyToken.address === "NATIVE")
   ) {
     const isDeposit = params.sellToken.address === "NATIVE";
     const data = isDeposit
@@ -117,76 +140,8 @@ export async function fetchSwapQuote(params: {
   const taker: Address =
     params.takerAddress || "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 
-  // 2. Query LI.FI Aggregator on Mainnet (for major trades)
-  if (!isTestnet) {
-    const fromTokenAddr =
-      params.sellToken.address === "NATIVE"
-        ? "0x0000000000000000000000000000000000000000"
-        : getAddress(params.sellToken.address);
-    const toTokenAddr =
-      params.buyToken.address === "NATIVE"
-        ? "0x0000000000000000000000000000000000000000"
-        : getAddress(params.buyToken.address);
-
-    try {
-      const lifiUrl = new URL("https://li.quest/v1/quote");
-      lifiUrl.searchParams.set("fromChain", String(params.chainId));
-      lifiUrl.searchParams.set("toChain", String(params.chainId));
-      lifiUrl.searchParams.set("fromToken", fromTokenAddr);
-      lifiUrl.searchParams.set("toToken", toTokenAddr);
-      lifiUrl.searchParams.set("fromAmount", sellUnits.toString());
-      lifiUrl.searchParams.set("fromAddress", taker);
-      lifiUrl.searchParams.set(
-        "slippage",
-        (params.slippagePercent / 100).toString()
-      );
-
-      const lifiRes = await fetch(lifiUrl.toString());
-      if (lifiRes.ok) {
-        const lifiData = await lifiRes.json();
-        if (lifiData?.transactionRequest?.to && lifiData?.estimate?.toAmount) {
-          const buyUnits = BigInt(lifiData.estimate.toAmount);
-          const sellFloat = parseFloat(params.sellAmountHuman);
-          const buyFloat = Number(buyUnits) / 10 ** params.buyToken.decimals;
-          const routerRate = sellFloat > 0 ? buyFloat / sellFloat : 1.0;
-
-          return {
-            chainId: params.chainId,
-            sellToken: params.sellToken.address,
-            buyToken: params.buyToken.address,
-            sellAmount: sellUnits.toString(),
-            buyAmount: buyUnits.toString(),
-            estimatedPriceImpact: lifiData.estimate.priceImpact || "0.08",
-            price: routerRate.toFixed(6),
-            guaranteedPrice: (
-              routerRate *
-              (1 - params.slippagePercent / 100)
-            ).toFixed(6),
-            to: getAddress(lifiData.transactionRequest.to as Address),
-            data: (lifiData.transactionRequest.data || "0x") as Hex,
-            value: BigInt(lifiData.transactionRequest.value || "0").toString(),
-            gas: String(lifiData.transactionRequest.gasLimit || "185000"),
-            allowanceTarget: getAddress(
-              (lifiData.estimate.approvalAddress ||
-                lifiData.transactionRequest.to) as Address
-            ),
-            sources: [
-              {
-                name: lifiData.toolDetails?.name || "LI.FI_Router",
-                proportion: "1",
-              },
-            ],
-            isSimulatedRouterCalldata: false,
-          };
-        }
-      }
-    } catch {
-      // Fall through to Direct On-Chain V2 Router
-    }
-  }
-
-  // 3. Direct On-Chain PancakeSwap V2 (BSC) / Uniswap V2 Router
-  // Query on-chain getAmountsOut to guarantee the router will NOT revert on slippage
+  // 2. Direct On-Chain PancakeSwap V2 (BSC) / Uniswap V2 Router
+  // Uses lean 135,000 gas limit (instead of LI.FI's 280,000+ Diamond gas limit) so $1.30 BNB swaps cost <$0.09 gas!
   const v2Router = V2_ROUTER_BY_CHAIN[params.chainId];
   if (!v2Router) {
     throw new Error("No DEX router available for this chain.");
@@ -217,11 +172,11 @@ export async function fetchSwapQuote(params: {
     });
     onChainBuyUnits = amountsOut[amountsOut.length - 1];
   } catch {
-    // If pair does not exist on-chain, estimate via priceStream
     const sellUsd = priceStream.getTokenUsdTicker(params.sellToken).price;
     const buyUsd = priceStream.getTokenUsdTicker(params.buyToken).price;
     const rate = buyUsd > 0 ? sellUsd / buyUsd : 1.0;
-    const estFloat = parseFloat(params.sellAmountHuman) * rate;
+    const estFloat =
+      (Number(sellUnits) / 10 ** realSellDecimals) * rate;
     onChainBuyUnits = parseUnits(
       estFloat.toFixed(Math.min(params.buyToken.decimals, 8)),
       params.buyToken.decimals
@@ -230,12 +185,13 @@ export async function fetchSwapQuote(params: {
 
   if (onChainBuyUnits <= 0n) {
     throw new Error(
-      `Insufficient on-chain liquidity on PancakeSwap for ${params.sellToken.symbol}/${params.buyToken.symbol}.`
+      `Insufficient pool liquidity for ${params.sellToken.symbol}/${params.buyToken.symbol}.`
     );
   }
 
-  // 1% slippage margin on micro-swaps to eliminate sandwich/block drift reverts
-  const slippageBps = BigInt(Math.max(50, Math.floor(params.slippagePercent * 100)));
+  const slippageBps = BigInt(
+    Math.max(50, Math.floor(params.slippagePercent * 100))
+  );
   const minOutUnits = (onChainBuyUnits * (10000n - slippageBps)) / 10000n;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
 
@@ -263,7 +219,7 @@ export async function fetchSwapQuote(params: {
     });
   }
 
-  const sellFloat = parseFloat(params.sellAmountHuman);
+  const sellFloat = Number(sellUnits) / 10 ** realSellDecimals;
   const buyFloat = Number(onChainBuyUnits) / 10 ** params.buyToken.decimals;
   const rate = sellFloat > 0 ? buyFloat / sellFloat : 1.0;
 
@@ -279,7 +235,7 @@ export async function fetchSwapQuote(params: {
     to: v2Router,
     data: routerCalldata,
     value: routerValue,
-    gas: "165000",
+    gas: "135000", // Lean 135k gas limit for PancakeSwap V2 (costs only ~0.000135 BNB = $0.09)
     allowanceTarget: v2Router,
     sources: [
       {
