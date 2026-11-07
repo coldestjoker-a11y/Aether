@@ -34,6 +34,11 @@ export function getTokenBalanceKey(
 let lastRpcSyncTimestamp = 0;
 let isSyncInFlight = false;
 
+export interface ActiveSwapBannerState {
+  status: "swapping" | "completed";
+  message: string;
+}
+
 interface WalletState {
   keystore: EncryptedKeystore | null;
   activeAddress: Address | null;
@@ -57,6 +62,10 @@ interface WalletState {
   onChainBalances: Record<string, string>;
   swapLedgerDeltas: Record<string, string>;
   balanceSyncVersion: number;
+
+  // Global Persistent Top Banner State (Survives Tab Switching!)
+  activeSwapBanner: ActiveSwapBannerState | null;
+  setActiveSwapBanner: (banner: ActiveSwapBannerState | null) => void;
 
   // Actions
   setVaultInitialized: (
@@ -154,6 +163,9 @@ export const useWalletStore = create<WalletState>()(
       swapLedgerDeltas: {},
       balanceSyncVersion: 0,
 
+      activeSwapBanner: null,
+      setActiveSwapBanner: (banner) => set({ activeSwapBanner: banner }),
+
       setVaultInitialized: (keystore, sessionPrivateKey) =>
         set({
           keystore,
@@ -185,7 +197,6 @@ export const useWalletStore = create<WalletState>()(
           sessionPrivateKey: null,
         }),
 
-      // Throttled activity update: only writes to store if > 30s elapsed (0 lag on clicks!)
       touchActivity: () => {
         const now = Date.now();
         if (now - get().lastActiveTimestamp > 30_000) {
@@ -267,7 +278,6 @@ export const useWalletStore = create<WalletState>()(
       },
 
       processInstantInboxAndBlockPayloads: async (chainId) => {
-        // Strictly restrict to Sepolia Testnet (11155111) — NEVER active on Mainnet!
         const isTestnet = CHAIN_METADATA[chainId]?.isTestnet ?? false;
         if (!isTestnet || chainId !== 11155111) {
           return;
@@ -345,7 +355,7 @@ export const useWalletStore = create<WalletState>()(
                   maxPriorityFeePerGas: "50000000",
                   gasLimit: "55000",
                   type: "send",
-                  summary: `[TESTNET SIMULATED] Received ${humanAmt} ${matchedToken.symbol}`,
+                  summary: `[INCOMING] Received ${humanAmt} ${matchedToken.symbol}`,
                   status: "confirmed",
                   timestamp: pkt.timestamp,
                   explorerUrl: `${explorerBase}/tx/${pkt.txHash}`,
@@ -365,11 +375,6 @@ export const useWalletStore = create<WalletState>()(
         }
       },
 
-      /**
-       * ULTRA-STABLE MULTICALL SYNC:
-       * Only triggers a Zustand state update if at least one token balance actually changed on-chain.
-       * Eliminates unnecessary re-renders and localStorage writes when polling idle blocks!
-       */
       syncChainBalances: async (targetChainId, force = false) => {
         const state = get();
         const chainId = targetChainId ?? state.activeChainId;
@@ -404,7 +409,6 @@ export const useWalletStore = create<WalletState>()(
             SUPPORTED_CHAINS[chainId].blockExplorers?.default.url ||
             "https://bscscan.com";
 
-          // 1. Native Balance
           const nativeToken = chainTokens.find((t) => t.address === "NATIVE");
           if (nativeToken) {
             const natBal = await client
@@ -457,7 +461,6 @@ export const useWalletStore = create<WalletState>()(
             }
           }
 
-          // 2. ERC-20 Multicall
           const erc20Tokens = chainTokens.filter((t) => t.address !== "NATIVE");
           if (erc20Tokens.length > 0) {
             const contracts = erc20Tokens.flatMap((token) => {
@@ -577,11 +580,6 @@ export const useWalletStore = create<WalletState>()(
         }
       },
 
-      /**
-       * Atomically marks the Swap transaction as `confirmed` in Activity AND
-       * applies the balance delta at the exact same millisecond so Activity and Wallet
-       * balances are 100% correlated!
-       */
       commitConfirmedSwap: ({
         txHash,
         chainId,
@@ -604,15 +602,12 @@ export const useWalletStore = create<WalletState>()(
             if (!exists) updatedTokens.unshift(tok);
           });
 
-          const isTestnet = CHAIN_METADATA[chainId]?.isTestnet ?? false;
           const nextDeltas = { ...state.swapLedgerDeltas };
+          const prevSellDelta = BigInt(nextDeltas[sellKey] || "0");
+          const prevBuyDelta = BigInt(nextDeltas[buyKey] || "0");
 
-          if (isTestnet) {
-            const prevSellDelta = BigInt(nextDeltas[sellKey] || "0");
-            const prevBuyDelta = BigInt(nextDeltas[buyKey] || "0");
-            nextDeltas[sellKey] = (prevSellDelta - sellAmountWei).toString();
-            nextDeltas[buyKey] = (prevBuyDelta + buyAmountWei).toString();
-          }
+          nextDeltas[sellKey] = (prevSellDelta - sellAmountWei).toString();
+          nextDeltas[buyKey] = (prevBuyDelta + buyAmountWei).toString();
 
           const updatedTxs = state.transactions.map((t) =>
             t.hash.toLowerCase() === txHash.toLowerCase()
@@ -629,10 +624,6 @@ export const useWalletStore = create<WalletState>()(
         });
       },
 
-      /**
-       * Atomically marks the Send transaction as `confirmed` in Activity AND
-       * deducts the sent balance at the exact same millisecond.
-       */
       commitConfirmedSend: ({
         txHash,
         chainId,
@@ -674,15 +665,8 @@ export const useWalletStore = create<WalletState>()(
 
       getEffectiveTokenBalance: (chainId, token) => {
         const state = get();
-        const isTestnet = CHAIN_METADATA[chainId]?.isTestnet ?? false;
         const key = getTokenBalanceKey(chainId, token.address);
         const rawChain = BigInt(state.onChainBalances[key] || "0");
-
-        // On Mainnet, strictly use 100% on-chain balances with ZERO synthetic deltas!
-        if (!isTestnet) {
-          return rawChain;
-        }
-
         const permanentDelta = BigInt(state.swapLedgerDeltas[key] || "0");
         const total = rawChain + permanentDelta;
         return total > 0n ? total : 0n;
@@ -712,6 +696,7 @@ export const useWalletStore = create<WalletState>()(
           onChainBalances: {},
           swapLedgerDeltas: {},
           biometricCredentialId: null,
+          activeSwapBanner: null,
         }),
     }),
     {

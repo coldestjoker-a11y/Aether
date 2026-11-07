@@ -506,12 +506,7 @@ export default function ActivityView() {
   return (
     <div className="space-y-4 pb-28">
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold">Activity</h2>
-          <p className="text-xs text-slate-400">
-            Tap any transaction to inspect full receipt details
-          </p>
-        </div>
+        <h2 className="text-xl font-bold">Activity</h2>
 
         {/* Fast Filter Pills */}
         <div className="flex gap-1 p-1 rounded-xl bg-slate-900 border border-white/10">
