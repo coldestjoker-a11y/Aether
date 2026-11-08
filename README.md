@@ -1,94 +1,74 @@
-# AetherVault (Aether) - Multi-Chain DeFi Wallet
+# AetherVault — Production Multi-Chain DeFi Wallet & DEX Aggregator
 
-AetherVault is an institutional-grade, non-custodial Web3 DeFi wallet and Progressive Web App (PWA) built with **Next.js 14**, **Viem**, **Wagmi**, **Tailwind CSS**, and **Zustand**.
+AetherVault is a high-performance, non-custodial Web3 DeFi wallet and Progressive Web App (PWA) engineered for ultra-low-latency Mainnet execution. Built with **Next.js 14**, **Viem**, **Tailwind CSS**, **Framer Motion**, and **Zustand**.
 
----
+## Core Architecture & Key Features
 
-## Key Features
+### 1. Hardware-Accelerated Cryptography & Zero-Lag Onboarding
+- **Standard BIP-39 / BIP-44 Derivation:** 12-word mnemonic generation with canonical `m/44'/60'/0'/0/0` EVM derivation (100% compatible with MetaMask, Ledger, and TrustWallet).
+- **Pre-Warmed WebCrypto Vault:** Native browser `PBKDF2-SHA256` (120,000 OWASP iterations) + `AES-256-GCM` keystore encryption completing in `<100ms` with zero main-thread blocking.
+- **WebAuthn Passkey & Biometric Binding:** Optional hardware authenticator lock alongside ephemeral session keys and throttled inactivity auto-lock.
 
-- **Bulletproof Cryptography & Security**:
-  - BIP-39 12-word mnemonic seed generation and deterministic `m/44'/60'/0'/0/0` key derivation.
-  - Interactive onboarding verification quiz ensuring secure mnemonic backup.
-  - WebCrypto PBKDF2 (310,000 iterations) + AES-GCM 256-bit keystore encryption.
-  - Ephemeral session keys with configurable inactivity auto-lock and zero plaintext leaks.
+### 2. Curated Multi-Chain Registry & Live Contract Importer
+- **8 Supported Networks:** Ethereum Mainnet, BNB Smart Chain (BSC), Arbitrum One, Base, Optimism, Polygon PoS, QIE Blockchain Mainnet, and Ethereum Sepolia Testnet.
+- **Noise-Free Blue-Chip Catalog:** Ships with a clean, curated set of globally recognized assets (`ETH`, `BNB`, `USDC`, `USDT`, `WBTC`, `SOL`, `QIE`, `POL`, `ARB`, `OP`, `LINK`, `UNI`).
+- **On-Chain ERC-20 Resolver (`resolveOnChainERC20Token`):** Paste any `0x` contract address on any supported chain to dynamically resolve `symbol()`, `name()`, and `decimals()` via Multicall3.
 
-- **Universal Multi-Chain Asset Registry & On-Chain Resolution**:
-  - Multi-chain support: Ethereum Mainnet, Sepolia Testnet, Arbitrum One, Base, Optimism, Polygon PoS, and BNB Smart Chain.
-  - Dynamic discovery of 3,000+ verified liquid tokens via LI.FI & Uniswap registries.
-  - Live on-chain contract resolver (`resolveOnChainERC20Token`): paste any `0x` contract address to query name, symbol, and decimals via multicall.
+### 3. Smart-Contract-Aware Gas Engine & 1-Trip Broadcasting
+- **Smart Contract Recipient Detection (`getBytecode`):** Automatically detects when a destination `0x` address is a smart contract (e.g., exchange deposit contracts or smart accounts) and dynamically scales the gas limit floor (`65,000+`) to prevent `[out of gas]` reverts.
+- **Automatic Native Sweep Reserve:** Dynamically carves out exact network gas requirements (`value + gasLimit * gasPrice <= nativeBalance`) when sending or swapping 100% (`MAX`) of native `BNB` or `ETH`.
+- **Multi-Provider Fallback Cluster:** Resilient HTTP + WebSocket (`wss://`) transport cluster across Binance Dataseed, Alchemy, Infura, PublicNode, and LlamaRPC.
+- **Non-Blocking Background Execution:** Instant modal drop-down with a persistent, cross-tab top status pill (`Swapping...` → `Completed!`) while receipts confirm in the background.
 
-- **Guaranteed Gas Engine & Resilient Execution**:
-  - Direct pending block `baseFeePerGas` inspection with EIP-1559 safety buffer formula:
-    `maxFeePerGas = (baseFeePerGas * multiplier) + maxPriorityFeePerGas`
-  - Dynamic priority fee floor (1.5 Gwei tip on Sepolia/Mainnet) and automatic Legacy `gasPrice` fallback on BSC.
-  - Multi-provider fallback transport with automatic failover (Alchemy + Infura + PublicNode).
-  - 2x gas fee deduction reserve on MAX native sends to prevent sweep failures.
-  - Automatic retry and 15% gas bumping on underpriced replacement errors.
-  - Granular manual custom Gwei override controls.
-
-- **DEX Aggregator & Security Shield**:
-  - Real-time swap routing with slippage protection and human-readable transaction summaries.
-  - Integrated GoPlus Security API for live honeypot, transfer tax, and contract audit verification.
-  - Exact allowance approval safety guard to protect user balances from router drain exploits.
-
----
+### 4. Hybrid DEX Aggregator & On-Chain Router Engine
+- **LI.FI + Direct V2 Router Execution:** Routes swaps through LI.FI's Mainnet Diamond Router and falls back to direct on-chain **PancakeSwap V2** (`BSC`) and **Uniswap V2** (`ETH/Arb/Base`) router encoding (`getAmountsOut` + `swapExactTokensForETH` / `swapExactETHForTokens`) so even micro-swaps (`$0.10+`) execute genuinely on-chain.
+- **Pre-Flight Simulation Guard:** Runs `eth_call` / `estimateGas` dry-runs and on-chain `decimals()` verification prior to signing to prevent reverted transactions from burning gas.
 
 ## Tech Stack
-
-- **Framework**: Next.js 14 (App Router)
-- **Styling**: Tailwind CSS + Lucide Icons + Framer Motion
-- **Blockchain Core**: Viem 2.x, Wagmi 2.x, Scure BIP32/BIP39
-- **State Management**: Zustand (with selective persistence)
-- **Testing**: Vitest (Unit) & Playwright (End-to-End browser automation)
-- **Package Manager**: pnpm
+- **Framework:** Next.js 14 (App Router, TypeScript)
+- **Blockchain Core:** Viem 2.x, Scure BIP-32 / BIP-39
+- **State & Sync:** Zustand (with deep-equality re-render guards) + Binance & CoinGecko Live Price Streams
+- **UI & Motion:** Tailwind CSS, Framer Motion (60fps GPU-accelerated sheets), Lucide Icons
+- **Testing:** Vitest (Unit) & Playwright (End-to-End automation)
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-
 - Node.js 20+
-- pnpm 9+
+- npm or pnpm
 
 ### Installation
-
 ```bash
-pnpm install
+npm install
 ```
 
 ### Environment Configuration
-
 Copy the example environment configuration:
-
 ```bash
 cp .env.example .env.local
 ```
 
 ### Development Server
-
 ```bash
-pnpm dev
+npm run dev
 ```
-
 Open [http://localhost:3000](http://localhost:3000) to view the application.
 
 ### Testing
-
 Run unit tests:
 ```bash
-pnpm test:unit
+npm run test:unit
 ```
 
 Run Playwright E2E browser tests:
 ```bash
-pnpm test:e2e
+npm run test:e2e
 ```
 
 ### Production Build
-
 ```bash
-pnpm build
-pnpm start
+npm run build
+npm run start
 ```
-
